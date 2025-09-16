@@ -1,0 +1,472 @@
+openapi: 3.0.3
+info:
+  title: Vue2 Blog Service API
+  version: 1.0.0
+  description: |
+    OpenAPI specification for the Vue2 Blog backend service. All responses are wrapped
+    in the standard envelope `{ "code": number, "msg": string, "data": any }`.
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+security:
+  - bearerAuth: []
+paths:
+  /api/v1/auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new user
+      description: Create a user account with a username, password and verification code.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserRegisterRequest'
+      responses:
+        '200':
+          description: Registration success message
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BasicResponse'
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      summary: User login
+      description: Authenticate a user and receive a JWT token. Token is also returned in the `Set-Cookie` header.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserLoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BasicResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          token:
+                            type: string
+                            description: Access token to be used with the Authorization header.
+                          user:
+                            $ref: '#/components/schemas/User'
+  /api/v1/auth/logout:
+    post:
+      tags: [Auth]
+      summary: Logout
+      description: Clears the login cookie on the client.
+      responses:
+        '200':
+          description: Logout success message
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BasicResponse'
+  /api/v1/auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token
+      description: Provide a refresh token via the `Refresh-Token` header to obtain a new access token.
+      security: []
+      parameters:
+        - in: header
+          name: Refresh-Token
+          required: true
+          schema:
+            type: string
+          description: Refresh token previously issued to the client.
+      responses:
+        '200':
+          description: New token issued
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BasicResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          token:
+                            type: string
+  /api/v1/auth/profile:
+    get:
+      tags: [Auth]
+      summary: Get current user profile
+      description: Requires a valid JWT token in the `Authorization` header or `token` cookie.
+      responses:
+        '200':
+          description: User profile information
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BasicResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          userInfo:
+                            $ref: '#/components/schemas/User'
+  /api/v1/articles:
+    get:
+      tags: [Articles]
+      summary: List articles
+      description: Retrieve a paginated list of articles. Content field is omitted in list responses.
+      parameters:
+        - in: query
+          name: tag
+          schema:
+            type: string
+          description: Filter by tag.
+        - in: query
+          name: skip
+          schema:
+            type: integer
+            minimum: 0
+          description: Number of documents to skip.
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+          description: Page size. Defaults to 5.
+      responses:
+        '200':
+          description: Article list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BasicResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Article'
+  /api/v1/articles/{id}:
+    get:
+      tags: [Articles]
+      summary: Get article by ID
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: MongoDB ObjectID of the article.
+      responses:
+        '200':
+          description: Article details (content included)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BasicResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ArticleDetail'
+  /api/v1/articles/hot:
+    get:
+      tags: [Articles]
+      summary: List hot articles
+      description: Returns articles sorted by page views.
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+          description: Number of articles to return. Defaults to 8.
+      responses:
+        '200':
+          description: Hot articles
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BasicResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Article'
+  /api/v1/articles/search:
+    post:
+      tags: [Articles]
+      summary: Search articles
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArticleSearchRequest'
+      responses:
+        '200':
+          description: Matching articles
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BasicResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Article'
+  /api/v1/articles/info:
+    get:
+      tags: [Articles]
+      summary: Get article statistics
+      responses:
+        '200':
+          description: Article info summary
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BasicResponse'
+                  - type: object
+                    properties:
+                      data:
+                        $ref: '#/components/schemas/ArticleInfo'
+  /api/v1/messages:
+    get:
+      tags: [Messages]
+      summary: List messages
+      parameters:
+        - in: query
+          name: skip
+          schema:
+            type: integer
+            minimum: 0
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 20
+          description: Defaults to 5 when not supplied.
+      responses:
+        '200':
+          description: Paginated message list
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/BasicResponse'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/Message'
+    post:
+      tags: [Messages]
+      summary: Create a new message
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MessageCreateRequest'
+      responses:
+        '200':
+          description: Message created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BasicResponse'
+  /api/v1/messages/{id}/replies:
+    post:
+      tags: [Messages]
+      summary: Reply to a message
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+          description: Target message ID.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MessageReplyRequest'
+      responses:
+        '200':
+          description: Reply created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BasicResponse'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    BasicResponse:
+      type: object
+      required: [code, msg]
+      properties:
+        code:
+          type: integer
+          description: Application level status code.
+        msg:
+          type: string
+        data:
+          description: Response payload. Null when not applicable.
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          description: MongoDB ObjectID.
+        user:
+          type: string
+        regDate:
+          type: integer
+          format: int64
+          description: Registration timestamp in milliseconds.
+        photo:
+          type: string
+        disabled:
+          type: boolean
+        admin:
+          type: boolean
+    UserLoginRequest:
+      type: object
+      required: [user, pwd]
+      properties:
+        user:
+          type: string
+          minLength: 2
+          maxLength: 7
+        pwd:
+          type: string
+          minLength: 6
+          maxLength: 18
+    UserRegisterRequest:
+      type: object
+      required: [user, pwd, vcode]
+      properties:
+        user:
+          type: string
+          minLength: 2
+          maxLength: 7
+        pwd:
+          type: string
+          minLength: 6
+          maxLength: 18
+        vcode:
+          type: string
+    Article:
+      type: object
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          description: Article type, e.g. 原创 or 转载.
+        title:
+          type: string
+        tag:
+          type: string
+        updateDate:
+          type: string
+          format: date-time
+        date:
+          type: string
+          format: date-time
+        surface:
+          type: string
+          description: Cover image URL.
+        pv:
+          type: integer
+          format: int64
+    ArticleDetail:
+      allOf:
+        - $ref: '#/components/schemas/Article'
+        - type: object
+          properties:
+            content:
+              type: string
+    ArticleSearchRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+    ArticleInfo:
+      type: object
+      properties:
+        id:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        num:
+          type: integer
+          format: int64
+    Message:
+      type: object
+      properties:
+        id:
+          type: string
+        user:
+          $ref: '#/components/schemas/User'
+        content:
+          type: string
+        date:
+          type: string
+          format: date-time
+        children:
+          type: array
+          items:
+            $ref: '#/components/schemas/MessageChild'
+    MessageChild:
+      type: object
+      properties:
+        user:
+          $ref: '#/components/schemas/User'
+        content:
+          type: string
+        reUser:
+          type: string
+        date:
+          type: string
+          format: date-time
+    MessageCreateRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+    MessageReplyRequest:
+      type: object
+      required: [content]
+      properties:
+        content:
+          type: string
+        reUser:
+          type: string

@@ -9,12 +9,30 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-type MessageService struct {
-	messageRepo *repository.MessageRepository
-	userRepo    *repository.UserRepository
+// MessageRepository 定义留言仓储接口
+type MessageRepository interface {
+	Create(ctx context.Context, message *model.Message) error
+	AddChildMessage(ctx context.Context, messageID primitive.ObjectID, child model.MessageChild) error
+	FindList(ctx context.Context, skip, limit int) ([]*model.Message, error)
 }
 
-func NewMessageService(messageRepo *repository.MessageRepository, userRepo *repository.UserRepository) *MessageService {
+// UserRepository 定义用户仓储接口（留言模块需要的能力）
+type UserRepository interface {
+	FindByID(ctx context.Context, id primitive.ObjectID) (*model.User, error)
+}
+
+// 接口实现断言
+var (
+	_ MessageRepository = (*repository.MessageRepository)(nil)
+	_ UserRepository    = (*repository.UserRepository)(nil)
+)
+
+type MessageService struct {
+	messageRepo MessageRepository
+	userRepo    UserRepository
+}
+
+func NewMessageService(messageRepo MessageRepository, userRepo UserRepository) *MessageService {
 	return &MessageService{
 		messageRepo: messageRepo,
 		userRepo:    userRepo,

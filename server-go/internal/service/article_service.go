@@ -9,11 +9,24 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-type ArticleService struct {
-	articleRepo *repository.ArticleRepository
+// ArticleRepository 定义文章仓储需要实现的方法
+type ArticleRepository interface {
+	FindList(ctx context.Context, tag string, skip, limit int) ([]*model.Article, error)
+	FindByID(ctx context.Context, id primitive.ObjectID) (*model.Article, error)
+	IncrementPV(ctx context.Context, id primitive.ObjectID) error
+	FindHot(ctx context.Context, limit int) ([]*model.Article, error)
+	Search(ctx context.Context, content string) ([]*model.Article, error)
+	GetInfo(ctx context.Context) (*model.ArticleInfo, error)
 }
 
-func NewArticleService(articleRepo *repository.ArticleRepository) *ArticleService {
+// 确保实际仓储实现接口
+var _ ArticleRepository = (*repository.ArticleRepository)(nil)
+
+type ArticleService struct {
+	articleRepo ArticleRepository
+}
+
+func NewArticleService(articleRepo ArticleRepository) *ArticleService {
 	return &ArticleService{
 		articleRepo: articleRepo,
 	}
