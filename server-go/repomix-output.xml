@@ -1,0 +1,3424 @@
+This file is a merged representation of the entire codebase, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of the entire repository's contents.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+cmd/
+  api/
+    main.go
+configs/
+  config.dev.yaml
+  config.yaml
+internal/
+  auth/
+    jwt.go
+  config/
+    config.go
+  handler/
+    article_handler.go
+    auth_handler.go
+    message_handler.go
+    upload_handler.go
+    visitor_handler.go
+  middleware/
+    auth.go
+    cors.go
+    logger.go
+    recovery.go
+  model/
+    article.go
+    message.go
+    upload.go
+    user.go
+    visitor.go
+  pkg/
+    response.go
+  repository/
+    article_repository.go
+    database.go
+    message_repository.go
+    user_repository.go
+    visitor_repository.go
+  server/
+    server.go
+  service/
+    article_service.go
+    message_service.go
+    upload_service.go
+    user_service.go
+    visitor_service.go
+pkg/
+  logger/
+    logger.go
+Dockerfile
+go.mod
+Makefile
+README.md
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="cmd/api/main.go">
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"vue2-blog-server/internal/auth"
+	"vue2-blog-server/internal/config"
+	"vue2-blog-server/internal/handler"
+	"vue2-blog-server/internal/repository"
+	"vue2-blog-server/internal/server"
+	"vue2-blog-server/internal/service"
+	"vue2-blog-server/pkg/logger"
+
+	"go.uber.org/zap"
+)
+
+func main() {
+	// 加载配置
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
+	}
+
+	// 初始化日志
+	zapLogger, err := logger.New(&cfg.Log)
+	if err != nil {
+		log.Fatalf("Failed to initialize logger: %v", err)
+	}
+	defer zapLogger.Sync()
+
+	zapLogger.Info("Starting vue2-blog-server...")
+
+	// 初始化数据库
+	db, err := repository.NewDatabase(cfg.Database.URI, cfg.Database.DBName)
+	if err != nil {
+		zapLogger.Fatal("Failed to connect to database", zap.Error(err))
+	}
+	defer db.Close()
+
+	zapLogger.Info("Connected to database successfully")
+
+	// 初始化Repository层
+	userRepo := repository.NewUserRepository(db)
+	articleRepo := repository.NewArticleRepository(db)
+	messageRepo := repository.NewMessageRepository(db)
+	visitorRepo := repository.NewVisitorRepository(db)
+
+	// 初始化Service层
+	userService := service.NewUserService(userRepo, visitorRepo)
+	articleService := service.NewArticleService(articleRepo)
+	messageService := service.NewMessageService(messageRepo, userRepo)
+	visitorService := service.NewVisitorService(visitorRepo, userRepo)
+	uploadService := service.NewUploadService(userService, cfg.Upload.Path, cfg.Upload.BaseURL)
+
+	// 初始化JWT管理器
+	jwtManager := auth.NewJWTManager(cfg.JWT.Secret, cfg.JWT.TokenExpires, cfg.JWT.RefreshExpires)
+
+	// 初始化Handler层
+	handlers := &server.Handlers{
+		AuthHandler:    handler.NewAuthHandler(userService, jwtManager),
+		ArticleHandler: handler.NewArticleHandler(articleService),
+		MessageHandler: handler.NewMessageHandler(messageService),
+		VisitorHandler: handler.NewVisitorHandler(visitorService),
+		UploadHandler:  handler.NewUploadHandler(uploadService),
+	}
+
+	// 初始化服务器
+	srv := server.NewServer(zapLogger, jwtManager, handlers)
+	srv.Initialize()
+
+	// 启动服务器
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+	
+	// 在单独的goroutine中启动服务器
+	go func() {
+		if err := srv.Start(addr); err != nil {
+			zapLogger.Fatal("Failed to start server", zap.Error(err))
+		}
+	}()
+
+	zapLogger.Info("Server started successfully", zap.String("address", addr))
+
+	// 等待中断信号以优雅地关闭服务器
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	zapLogger.Info("Shutting down server...")
+
+	// 创建一个5秒的上下文来关闭服务器
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		zapLogger.Fatal("Server forced to shutdown", zap.Error(err))
+	}
+
+	zapLogger.Info("Server exited")
+}
+</file>
+
+<file path="configs/config.dev.yaml">
+server:
+  host: "localhost"
+  port: 8080
+
+database:
+  uri: "mongodb://localhost:27017"
+  db_name: "blog"
+
+jwt:
+  secret: "dev-jwt-secret-key"
+  token_expires: "24h"
+  refresh_expires: "168h"
+
+upload:
+  path: "./public"
+  base_url: "http://localhost:8080"
+
+log:
+  level: "debug"
+  format: "console"
+</file>
+
+<file path="configs/config.yaml">
+server:
+  host: "0.0.0.0"
+  port: 8080
+
+database:
+  uri: "mongodb://localhost:27017"
+  db_name: "blog"
+
+jwt:
+  secret: "your-jwt-secret-key-change-in-production"
+  token_expires: "24h"
+  refresh_expires: "168h" # 7 days
+
+upload:
+  path: "./public"
+  base_url: "http://localhost:8080"
+
+log:
+  level: "info"
+  format: "json"
+</file>
+
+<file path="internal/auth/jwt.go">
+package auth
+
+import (
+	"errors"
+	"time"
+
+	"vue2-blog-server/internal/model"
+
+	"github.com/golang-jwt/jwt/v5"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+// Claims JWT载荷
+type Claims struct {
+	UserID   primitive.ObjectID `json:"userId"`
+	Username string             `json:"username"`
+	Admin    bool               `json:"admin"`
+	jwt.RegisteredClaims
+}
+
+// JWTManager JWT管理器
+type JWTManager struct {
+	secretKey     string
+	tokenExpires  time.Duration
+	refreshExpires time.Duration
+}
+
+// NewJWTManager 创建JWT管理器
+func NewJWTManager(secretKey string, tokenExpires, refreshExpires time.Duration) *JWTManager {
+	return &JWTManager{
+		secretKey:     secretKey,
+		tokenExpires:  tokenExpires,
+		refreshExpires: refreshExpires,
+	}
+}
+
+// GenerateToken 生成访问令牌
+func (j *JWTManager) GenerateToken(user *model.UserDTO) (string, error) {
+	claims := &Claims{
+		UserID:   user.ID,
+		Username: user.User,
+		Admin:    user.Admin,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(j.tokenExpires)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now()),
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(j.secretKey))
+}
+
+// GenerateRefreshToken 生成刷新令牌
+func (j *JWTManager) GenerateRefreshToken(user *model.UserDTO) (string, error) {
+	claims := &Claims{
+		UserID:   user.ID,
+		Username: user.User,
+		Admin:    user.Admin,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(j.refreshExpires)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now()),
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString([]byte(j.secretKey))
+}
+
+// ParseToken 解析令牌
+func (j *JWTManager) ParseToken(tokenString string) (*Claims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+		return []byte(j.secretKey), nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	if !token.Valid {
+		return nil, errors.New("invalid token")
+	}
+
+	claims, ok := token.Claims.(*Claims)
+	if !ok {
+		return nil, errors.New("invalid token claims")
+	}
+
+	return claims, nil
+}
+
+// RefreshToken 刷新令牌
+func (j *JWTManager) RefreshToken(refreshToken string) (string, error) {
+	claims, err := j.ParseToken(refreshToken)
+	if err != nil {
+		return "", err
+	}
+
+	// 创建新的访问令牌
+	newClaims := &Claims{
+		UserID:   claims.UserID,
+		Username: claims.Username,
+		Admin:    claims.Admin,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(j.tokenExpires)),
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			NotBefore: jwt.NewNumericDate(time.Now()),
+		},
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, newClaims)
+	return token.SignedString([]byte(j.secretKey))
+}
+</file>
+
+<file path="internal/config/config.go">
+package config
+
+import (
+	"time"
+
+	"github.com/spf13/viper"
+)
+
+type Config struct {
+	Server   ServerConfig   `mapstructure:"server"`
+	Database DatabaseConfig `mapstructure:"database"`
+	JWT      JWTConfig      `mapstructure:"jwt"`
+	Upload   UploadConfig   `mapstructure:"upload"`
+	Log      LogConfig      `mapstructure:"log"`
+}
+
+type ServerConfig struct {
+	Host string `mapstructure:"host"`
+	Port int    `mapstructure:"port"`
+}
+
+type DatabaseConfig struct {
+	URI    string `mapstructure:"uri"`
+	DBName string `mapstructure:"db_name"`
+}
+
+type JWTConfig struct {
+	Secret         string        `mapstructure:"secret"`
+	TokenExpires   time.Duration `mapstructure:"token_expires"`
+	RefreshExpires time.Duration `mapstructure:"refresh_expires"`
+}
+
+type UploadConfig struct {
+	Path    string `mapstructure:"path"`
+	BaseURL string `mapstructure:"base_url"`
+}
+
+type LogConfig struct {
+	Level  string `mapstructure:"level"`
+	Format string `mapstructure:"format"`
+}
+
+func Load() (*Config, error) {
+	viper.SetConfigName("config")
+	viper.SetConfigType("yaml")
+	viper.AddConfigPath("./configs")
+	viper.AddConfigPath(".")
+
+	// 设置默认值
+	setDefaults()
+
+	// 环境变量覆盖
+	viper.AutomaticEnv()
+
+	// 读取配置文件
+	if err := viper.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			return nil, err
+		}
+	}
+
+	var config Config
+	if err := viper.Unmarshal(&config); err != nil {
+		return nil, err
+	}
+
+	return &config, nil
+}
+
+func setDefaults() {
+	// 服务器配置
+	viper.SetDefault("server.host", "0.0.0.0")
+	viper.SetDefault("server.port", 8080)
+
+	// 数据库配置
+	viper.SetDefault("database.uri", "mongodb://localhost:27017")
+	viper.SetDefault("database.db_name", "blog")
+
+	// JWT配置
+	viper.SetDefault("jwt.secret", "your-secret-key")
+	viper.SetDefault("jwt.token_expires", 24*time.Hour)
+	viper.SetDefault("jwt.refresh_expires", 7*24*time.Hour)
+
+	// 上传配置
+	viper.SetDefault("upload.path", "./public")
+	viper.SetDefault("upload.base_url", "http://localhost:8080")
+
+	// 日志配置
+	viper.SetDefault("log.level", "info")
+	viper.SetDefault("log.format", "json")
+}
+</file>
+
+<file path="internal/handler/article_handler.go">
+package handler
+
+import (
+	"strconv"
+
+	"vue2-blog-server/internal/model"
+	"vue2-blog-server/internal/pkg"
+	"vue2-blog-server/internal/service"
+
+	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type ArticleHandler struct {
+	articleService *service.ArticleService
+	validator      *validator.Validate
+}
+
+func NewArticleHandler(articleService *service.ArticleService) *ArticleHandler {
+	return &ArticleHandler{
+		articleService: articleService,
+		validator:      validator.New(),
+	}
+}
+
+// GetList 获取文章列表
+func (h *ArticleHandler) GetList(c *gin.Context) {
+	var req model.ArticleListRequest
+	
+	// 支持form数据和query参数
+	if c.Request.Method == "POST" {
+		// 处理POST表单数据
+		if tag := c.PostForm("tag"); tag != "" {
+			req.Tag = tag
+		}
+		if skip := c.PostForm("skip"); skip != "" {
+			if s, err := strconv.Atoi(skip); err == nil {
+				req.Skip = s
+			}
+		}
+		if limit := c.PostForm("limit"); limit != "" {
+			if l, err := strconv.Atoi(limit); err == nil {
+				req.Limit = l
+			}
+		}
+	} else {
+		// GET请求使用query参数
+		if err := c.ShouldBindQuery(&req); err != nil {
+			pkg.ValidateError(c, "请求参数错误")
+			return
+		}
+	}
+
+	// 设置默认值
+	if req.Limit == 0 {
+		req.Limit = 5
+	}
+
+	if err := h.validator.Struct(&req); err != nil {
+		pkg.ValidateError(c, "参数验证失败")
+		return
+	}
+
+	articles, err := h.articleService.GetList(c.Request.Context(), &req)
+	if err != nil {
+		pkg.ServerError(c, "获取文章列表失败")
+		return
+	}
+
+	pkg.Success(c, articles)
+}
+
+// GetByID 获取文章详情
+func (h *ArticleHandler) GetByID(c *gin.Context) {
+	var idStr string
+	
+	// 优先从context获取ID（用于兼容接口）
+	if id, exists := c.Get("id"); exists {
+		idStr = id.(string)
+	} else {
+		idStr = c.Param("id")
+	}
+	
+	if idStr == "" {
+		pkg.ValidateError(c, "缺少文章ID")
+		return
+	}
+	
+	id, err := primitive.ObjectIDFromHex(idStr)
+	if err != nil {
+		pkg.ValidateError(c, "无效的文章ID")
+		return
+	}
+
+	article, err := h.articleService.GetByID(c.Request.Context(), id)
+	if err != nil {
+		pkg.Error(c, "文章不存在")
+		return
+	}
+
+	pkg.Success(c, article)
+}
+
+// GetHot 获取热门文章
+func (h *ArticleHandler) GetHot(c *gin.Context) {
+	var req model.ArticleHotRequest
+	
+	// 支持form数据和query参数
+	if c.Request.Method == "POST" {
+		if limit := c.PostForm("limit"); limit != "" {
+			if l, err := strconv.Atoi(limit); err == nil {
+				req.Limit = l
+			}
+		}
+	} else {
+		if err := c.ShouldBindQuery(&req); err != nil {
+			pkg.ValidateError(c, "请求参数错误")
+			return
+		}
+	}
+
+	// 设置默认值
+	if req.Limit == 0 {
+		req.Limit = 8
+	}
+
+	if err := h.validator.Struct(&req); err != nil {
+		pkg.ValidateError(c, "参数验证失败")
+		return
+	}
+
+	articles, err := h.articleService.GetHot(c.Request.Context(), &req)
+	if err != nil {
+		pkg.ServerError(c, "获取热门文章失败")
+		return
+	}
+
+	pkg.Success(c, articles)
+}
+
+// Search 搜索文章
+func (h *ArticleHandler) Search(c *gin.Context) {
+	var req model.ArticleSearchRequest
+	
+	// 支持form数据和JSON数据
+	if content := c.PostForm("keywords"); content != "" {
+		// 表单数据 - keywords字段
+		req.Content = content
+	} else if content := c.PostForm("content"); content != "" {
+		// 表单数据 - content字段
+		req.Content = content
+	} else if contentFromCtx, exists := c.Get("content"); exists {
+		// 从context获取（server.go中设置）
+		req.Content = contentFromCtx.(string)
+	} else {
+		// JSON数据
+		if err := c.ShouldBindJSON(&req); err != nil {
+			pkg.ValidateError(c, "请求参数错误")
+			return
+		}
+	}
+
+	if err := h.validator.Struct(&req); err != nil {
+		pkg.ValidateError(c, "参数验证失败")
+		return
+	}
+
+	articles, err := h.articleService.Search(c.Request.Context(), &req)
+	if err != nil {
+		pkg.ServerError(c, "搜索文章失败")
+		return
+	}
+
+	pkg.Success(c, articles)
+}
+
+// GetInfo 获取文章信息统计
+func (h *ArticleHandler) GetInfo(c *gin.Context) {
+	info, err := h.articleService.GetInfo(c.Request.Context())
+	if err != nil {
+		pkg.ServerError(c, "获取文章信息失败")
+		return
+	}
+
+	pkg.Success(c, info)
+}
+
+// GetExtend 获取延伸阅读
+func (h *ArticleHandler) GetExtend(c *gin.Context) {
+	tag := c.PostForm("tag")
+	if tag == "" {
+		pkg.ValidateError(c, "缺少标签参数")
+		return
+	}
+
+	// 创建请求结构
+	req := &model.ArticleListRequest{
+		Tag:   tag,
+		Skip:  0,
+		Limit: 3, // 延伸阅读一般返回3篇
+	}
+
+	articles, err := h.articleService.GetList(c.Request.Context(), req)
+	if err != nil {
+		pkg.ServerError(c, "获取延伸阅读失败")
+		return
+	}
+
+	pkg.Success(c, articles)
+}
+</file>
+
+<file path="internal/handler/auth_handler.go">
+package handler
+
+import (
+	"bytes"
+	"crypto/rand"
+	"encoding/base64"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
+	"net/http"
+
+	"vue2-blog-server/internal/auth"
+	"vue2-blog-server/internal/model"
+	"vue2-blog-server/internal/pkg"
+	"vue2-blog-server/internal/service"
+
+	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type AuthHandler struct {
+	userService  *service.UserService
+	jwtManager   *auth.JWTManager
+	validator    *validator.Validate
+	vcodeStorage map[string]string // 临时存储验证码，生产环境应使用Redis
+}
+
+func NewAuthHandler(userService *service.UserService, jwtManager *auth.JWTManager) *AuthHandler {
+	return &AuthHandler{
+		userService:  userService,
+		jwtManager:   jwtManager,
+		validator:    validator.New(),
+		vcodeStorage: make(map[string]string),
+	}
+}
+
+// Register 用户注册
+func (h *AuthHandler) Register(c *gin.Context) {
+	var req model.UserRegisterRequest
+	
+	// 支持form数据和JSON数据
+	if user := c.PostForm("user"); user != "" {
+		req.User = user
+		req.Pwd = c.PostForm("pwd")
+		req.Vcode = c.PostForm("vcode")
+	} else {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			pkg.ValidateError(c, "请求参数错误")
+			return
+		}
+	}
+
+	if err := h.validator.Struct(&req); err != nil {
+		pkg.ValidateError(c, "数据验证失败")
+		return
+	}
+
+	// 验证验证码
+	sessionKey := c.GetHeader("X-Session-Key")
+	if sessionKey == "" {
+		sessionKey = c.PostForm("sessionKey")
+	}
+	
+	if sessionKey != "" && h.vcodeStorage[sessionKey] != "" {
+		if h.vcodeStorage[sessionKey] != req.Vcode {
+			pkg.ValidateError(c, "验证码错误")
+			return
+		}
+		// 验证成功后删除验证码
+		delete(h.vcodeStorage, sessionKey)
+	}
+	
+	err := h.userService.Register(c.Request.Context(), &req)
+	if err != nil {
+		pkg.Error(c, err.Error())
+		return
+	}
+
+	pkg.SuccessWithMsg(c, "注册成功", nil)
+}
+
+// Login 用户登录
+func (h *AuthHandler) Login(c *gin.Context) {
+	var req model.UserLoginRequest
+	
+	// 支持form数据和JSON数据
+	if user := c.PostForm("user"); user != "" {
+		req.User = user
+		req.Pwd = c.PostForm("pwd")
+	} else {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			pkg.ValidateError(c, "请求参数错误")
+			return
+		}
+	}
+
+	if err := h.validator.Struct(&req); err != nil {
+		pkg.ValidateError(c, "数据验证失败")
+		return
+	}
+
+	user, err := h.userService.Login(c.Request.Context(), &req)
+	if err != nil {
+		pkg.Error(c, err.Error())
+		return
+	}
+
+	// 生成JWT token
+	token, err := h.jwtManager.GenerateToken(user)
+	if err != nil {
+		pkg.ServerError(c, "生成令牌失败")
+		return
+	}
+
+	// 设置Cookie
+	c.SetCookie("token", token, 3600*24*7, "/", "", false, true) // 7天有效期
+
+	pkg.SuccessWithMsg(c, "登录成功", gin.H{
+		"token": token,
+		"user":  user,
+	})
+}
+
+// Logout 用户登出
+func (h *AuthHandler) Logout(c *gin.Context) {
+	// 清除Cookie
+	c.SetCookie("token", "", -1, "/", "", false, true)
+	
+	pkg.SuccessWithMsg(c, "退出登录成功", nil)
+}
+
+// Profile 获取用户资料
+func (h *AuthHandler) Profile(c *gin.Context) {
+	userID, exists := c.Get("userID")
+	if !exists {
+		pkg.AuthError(c, "未找到用户信息")
+		return
+	}
+
+	user, err := h.userService.GetProfile(c.Request.Context(), userID.(primitive.ObjectID))
+	if err != nil {
+		pkg.Error(c, "获取用户信息失败")
+		return
+	}
+
+	pkg.Success(c, gin.H{"userInfo": user})
+}
+
+// RefreshToken 刷新令牌
+func (h *AuthHandler) RefreshToken(c *gin.Context) {
+	refreshToken := c.GetHeader("Refresh-Token")
+	if refreshToken == "" {
+		pkg.ValidateError(c, "缺少刷新令牌")
+		return
+	}
+
+	newToken, err := h.jwtManager.RefreshToken(refreshToken)
+	if err != nil {
+		pkg.AuthError(c, "刷新令牌失败")
+		return
+	}
+
+	pkg.Success(c, gin.H{"token": newToken})
+}
+
+// CheckLogin 检查登录状态（兼容旧接口）
+func (h *AuthHandler) CheckLogin(c *gin.Context) {
+	userID, exists := c.Get("userID")
+	if !exists {
+		pkg.Success(c, gin.H{"userInfo": false})
+		return
+	}
+
+	user, err := h.userService.GetProfile(c.Request.Context(), userID.(primitive.ObjectID))
+	if err != nil {
+		pkg.Success(c, gin.H{"userInfo": false})
+		return
+	}
+
+	pkg.Success(c, gin.H{"userInfo": user})
+}
+
+// CheckLoginLegacy 检查登录状态（旧版本兼容格式）
+func (h *AuthHandler) CheckLoginLegacy(c *gin.Context) {
+	userID, exists := c.Get("userID")
+	if !exists {
+		// 直接返回裸对象，不使用pkg.Success包装
+		c.JSON(http.StatusOK, gin.H{"userInfo": false})
+		return
+	}
+
+	user, err := h.userService.GetProfile(c.Request.Context(), userID.(primitive.ObjectID))
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"userInfo": false})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"userInfo": user})
+}
+
+// GenerateVCode 生成验证码
+func (h *AuthHandler) GenerateVCode(c *gin.Context) {
+	// 生成随机字符串作为验证码
+	code := h.generateRandomCode(4)
+	
+	// 生成会话key
+	sessionKey := h.generateSessionKey()
+	
+	// 存储验证码
+	h.vcodeStorage[sessionKey] = code
+	
+	// 生成SVG图片
+	svgImg := h.generateCodeImage(code)
+	
+	c.Header("X-Session-Key", sessionKey)
+	pkg.Success(c, gin.H{
+		"svgCode":    svgImg,
+		"sessionKey": sessionKey,
+	})
+}
+
+// CheckVCode 验证验证码
+func (h *AuthHandler) CheckVCode(c *gin.Context) {
+	svgCode := c.PostForm("svgCode")
+	sessionKey := c.GetHeader("X-Session-Key")
+	if sessionKey == "" {
+		sessionKey = c.PostForm("sessionKey")
+	}
+	
+	if sessionKey == "" {
+		pkg.ValidateError(c, "缺少会话标识")
+		return
+	}
+	
+	storedCode, exists := h.vcodeStorage[sessionKey]
+	if !exists {
+		pkg.ValidateError(c, "验证码已过期")
+		return
+	}
+	
+	if storedCode != svgCode {
+		pkg.ValidateError(c, "验证码错误")
+		return
+	}
+	
+	pkg.Success(c, gin.H{"valid": true})
+}
+
+// generateRandomCode 生成随机验证码
+func (h *AuthHandler) generateRandomCode(length int) string {
+	chars := "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	code := make([]byte, length)
+	for i := 0; i < length; i++ {
+		b := make([]byte, 1)
+		rand.Read(b)
+		code[i] = chars[int(b[0])%len(chars)]
+	}
+	return string(code)
+}
+
+// generateSessionKey 生成会话key
+func (h *AuthHandler) generateSessionKey() string {
+	b := make([]byte, 16)
+	rand.Read(b)
+	return base64.URLEncoding.EncodeToString(b)
+}
+
+// generateCodeImage 生成验证码图片
+func (h *AuthHandler) generateCodeImage(code string) string {
+	// 创建简单的验证码图片
+	width, height := 120, 40
+	img := image.NewRGBA(image.Rect(0, 0, width, height))
+	
+	// 填充白色背景
+	draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{255, 255, 255, 255}}, image.Point{}, draw.Src)
+	
+	// 这里应该绘制验证码文字，为了简化，我们返回base64编码的PNG
+	var buf bytes.Buffer
+	png.Encode(&buf, img)
+	
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+</file>
+
+<file path="internal/handler/message_handler.go">
+package handler
+
+import (
+	"strconv"
+
+	"vue2-blog-server/internal/model"
+	"vue2-blog-server/internal/pkg"
+	"vue2-blog-server/internal/service"
+
+	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type MessageHandler struct {
+	messageService *service.MessageService
+	validator      *validator.Validate
+}
+
+func NewMessageHandler(messageService *service.MessageService) *MessageHandler {
+	return &MessageHandler{
+		messageService: messageService,
+		validator:      validator.New(),
+	}
+}
+
+// Create 创建留言
+func (h *MessageHandler) Create(c *gin.Context) {
+	userID, exists := c.Get("userID")
+	if !exists {
+		pkg.AuthError(c, "请先登录")
+		return
+	}
+
+	var req model.MessageCreateRequest
+	
+	// 支持form数据和JSON数据
+	if content := c.PostForm("content"); content != "" {
+		req.Content = content
+	} else {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			pkg.ValidateError(c, "请求参数错误")
+			return
+		}
+	}
+
+	if err := h.validator.Struct(&req); err != nil {
+		pkg.ValidateError(c, "参数验证失败")
+		return
+	}
+
+	err := h.messageService.Create(c.Request.Context(), userID.(primitive.ObjectID), &req)
+	if err != nil {
+		pkg.ServerError(c, "创建留言失败")
+		return
+	}
+
+	pkg.SuccessWithMsg(c, "留言成功", nil)
+}
+
+// Reply 回复留言
+func (h *MessageHandler) Reply(c *gin.Context) {
+	userID, exists := c.Get("userID")
+	if !exists {
+		pkg.AuthError(c, "请先登录")
+		return
+	}
+
+	var messageIDStr string
+	// 优先从context获取ID（用于兼容接口）
+	if id, exists := c.Get("id"); exists {
+		messageIDStr = id.(string)
+	} else {
+		messageIDStr = c.Param("id")
+	}
+	
+	if messageIDStr == "" {
+		pkg.ValidateError(c, "缺少留言ID")
+		return
+	}
+	
+	messageID, err := primitive.ObjectIDFromHex(messageIDStr)
+	if err != nil {
+		pkg.ValidateError(c, "无效的留言ID")
+		return
+	}
+
+	var req model.MessageReplyRequest
+	
+	// 支持form数据和JSON数据
+	if content := c.PostForm("content"); content != "" {
+		req.Content = content
+		req.ReUser = c.PostForm("reUser") // 可选字段
+	} else {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			pkg.ValidateError(c, "请求参数错误")
+			return
+		}
+	}
+
+	if err := h.validator.Struct(&req); err != nil {
+		pkg.ValidateError(c, "参数验证失败")
+		return
+	}
+
+	err = h.messageService.AddReply(c.Request.Context(), messageID, userID.(primitive.ObjectID), &req)
+	if err != nil {
+		pkg.ServerError(c, "回复留言失败")
+		return
+	}
+
+	pkg.SuccessWithMsg(c, "回复成功", nil)
+}
+
+// GetList 获取留言列表
+func (h *MessageHandler) GetList(c *gin.Context) {
+	var req model.MessageListRequest
+	
+	// 支持form数据和query参数
+	if c.Request.Method == "POST" {
+		if skip := c.PostForm("skip"); skip != "" {
+			if s, err := strconv.Atoi(skip); err == nil {
+				req.Skip = s
+			}
+		}
+		if limit := c.PostForm("limit"); limit != "" {
+			if l, err := strconv.Atoi(limit); err == nil {
+				req.Limit = l
+			}
+		}
+	} else {
+		if err := c.ShouldBindQuery(&req); err != nil {
+			pkg.ValidateError(c, "请求参数错误")
+			return
+		}
+	}
+
+	// 设置默认值
+	if req.Limit == 0 {
+		req.Limit = 5
+	}
+
+	if err := h.validator.Struct(&req); err != nil {
+		pkg.ValidateError(c, "参数验证失败")
+		return
+	}
+
+	messages, err := h.messageService.GetList(c.Request.Context(), &req)
+	if err != nil {
+		pkg.ServerError(c, "获取留言列表失败")
+		return
+	}
+
+	pkg.Success(c, messages)
+}
+</file>
+
+<file path="internal/handler/upload_handler.go">
+package handler
+
+import (
+	"vue2-blog-server/internal/pkg"
+	"vue2-blog-server/internal/service"
+
+	"github.com/gin-gonic/gin"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type UploadHandler struct {
+	uploadService *service.UploadService
+}
+
+func NewUploadHandler(uploadService *service.UploadService) *UploadHandler {
+	return &UploadHandler{
+		uploadService: uploadService,
+	}
+}
+
+// UploadAvatar 上传头像
+func (h *UploadHandler) UploadAvatar(c *gin.Context) {
+	userID, exists := c.Get("userID")
+	if !exists {
+		pkg.AuthError(c, "请先登录")
+		return
+	}
+
+	// 获取上传的文件
+	file, err := c.FormFile("avatar")
+	if err != nil {
+		pkg.ValidateError(c, "请选择要上传的文件")
+		return
+	}
+
+	result, err := h.uploadService.UploadAvatar(c.Request.Context(), userID.(primitive.ObjectID), file)
+	if err != nil {
+		pkg.Error(c, err.Error())
+		return
+	}
+
+	pkg.SuccessWithMsg(c, "头像上传成功", result)
+}
+
+// UploadAvatarLegacy 上传头像（兼容旧版本，使用file字段）
+func (h *UploadHandler) UploadAvatarLegacy(c *gin.Context) {
+	userID, exists := c.Get("userID")
+	if !exists {
+		pkg.AuthError(c, "请先登录")
+		return
+	}
+
+	// 优先尝试 file 字段（前端默认）
+	file, err := c.FormFile("file")
+	if err != nil {
+		// 如果 file 字段不存在，尝试 avatar 字段
+		file, err = c.FormFile("avatar")
+		if err != nil {
+			pkg.ValidateError(c, "请选择要上传的文件")
+			return
+		}
+	}
+
+	result, err := h.uploadService.UploadAvatar(c.Request.Context(), userID.(primitive.ObjectID), file)
+	if err != nil {
+		pkg.Error(c, err.Error())
+		return
+	}
+
+	pkg.SuccessWithMsg(c, "头像上传成功", result)
+}
+</file>
+
+<file path="internal/handler/visitor_handler.go">
+package handler
+
+import (
+	"strconv"
+
+	"vue2-blog-server/internal/model"
+	"vue2-blog-server/internal/pkg"
+	"vue2-blog-server/internal/service"
+
+	"github.com/gin-gonic/gin"
+	"github.com/go-playground/validator/v10"
+)
+
+type VisitorHandler struct {
+	visitorService *service.VisitorService
+	validator      *validator.Validate
+}
+
+func NewVisitorHandler(visitorService *service.VisitorService) *VisitorHandler {
+	return &VisitorHandler{
+		visitorService: visitorService,
+		validator:      validator.New(),
+	}
+}
+
+// GetList 获取访客列表
+func (h *VisitorHandler) GetList(c *gin.Context) {
+	var req model.VisitorListRequest
+	
+	// 支持form数据和query参数
+	if c.Request.Method == "POST" {
+		if limit := c.PostForm("limit"); limit != "" {
+			if l, err := strconv.Atoi(limit); err == nil {
+				req.Limit = l
+			}
+		}
+	} else {
+		if err := c.ShouldBindQuery(&req); err != nil {
+			pkg.ValidateError(c, "请求参数错误")
+			return
+		}
+	}
+
+	// 设置默认值
+	if req.Limit == 0 {
+		req.Limit = 12
+	}
+
+	if err := h.validator.Struct(&req); err != nil {
+		pkg.ValidateError(c, "参数验证失败")
+		return
+	}
+
+	visitors, err := h.visitorService.GetList(c.Request.Context(), &req)
+	if err != nil {
+		pkg.ServerError(c, "获取访客列表失败")
+		return
+	}
+
+	pkg.Success(c, visitors)
+}
+</file>
+
+<file path="internal/middleware/auth.go">
+package middleware
+
+import (
+	"strings"
+
+	"vue2-blog-server/internal/auth"
+	"vue2-blog-server/internal/pkg"
+
+	"github.com/gin-gonic/gin"
+)
+
+// AuthMiddleware JWT认证中间件
+func AuthMiddleware(jwtManager *auth.JWTManager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 从Header或Cookie中获取token
+		token := extractToken(c)
+		if token == "" {
+			pkg.AuthError(c, "未提供认证令牌")
+			c.Abort()
+			return
+		}
+
+		// 解析token
+		claims, err := jwtManager.ParseToken(token)
+		if err != nil {
+			pkg.AuthError(c, "无效的认证令牌")
+			c.Abort()
+			return
+		}
+
+		// 将用户信息存入上下文
+		c.Set("userID", claims.UserID)
+		c.Set("username", claims.Username)
+		c.Set("admin", claims.Admin)
+
+		c.Next()
+	}
+}
+
+// AdminMiddleware 管理员权限中间件
+func AdminMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		admin, exists := c.Get("admin")
+		if !exists {
+			pkg.AuthError(c, "未找到用户权限信息")
+			c.Abort()
+			return
+		}
+
+		if !admin.(bool) {
+			pkg.AuthError(c, "需要管理员权限")
+			c.Abort()
+			return
+		}
+
+		c.Next()
+	}
+}
+
+// OptionalAuthMiddleware 可选认证中间件（不强制要求登录）
+func OptionalAuthMiddleware(jwtManager *auth.JWTManager) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		token := extractToken(c)
+		if token != "" {
+			claims, err := jwtManager.ParseToken(token)
+			if err == nil {
+				// 将用户信息存入上下文
+				c.Set("userID", claims.UserID)
+				c.Set("username", claims.Username)
+				c.Set("admin", claims.Admin)
+			}
+		}
+		c.Next()
+	}
+}
+
+// extractToken 提取token
+func extractToken(c *gin.Context) string {
+	// 首先从Authorization Header中获取
+	bearerToken := c.GetHeader("Authorization")
+	if len(bearerToken) > 7 && strings.ToUpper(bearerToken[0:6]) == "BEARER" {
+		return bearerToken[7:]
+	}
+
+	// 从Cookie中获取
+	token, err := c.Cookie("token")
+	if err == nil {
+		return token
+	}
+
+	// 从query参数中获取
+	return c.Query("token")
+}
+</file>
+
+<file path="internal/middleware/cors.go">
+package middleware
+
+import (
+	"github.com/gin-gonic/gin"
+)
+
+// CORSMiddleware 跨域中间件
+func CORSMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		origin := c.GetHeader("Origin")
+		if origin == "" {
+			origin = "*"
+		}
+
+		c.Header("Access-Control-Allow-Origin", origin)
+		c.Header("Access-Control-Allow-Credentials", "true")
+		c.Header("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
+		c.Header("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
+		c.Header("Content-Type", "application/json; charset=utf-8")
+
+		if c.Request.Method == "OPTIONS" {
+			c.AbortWithStatus(204)
+			return
+		}
+
+		c.Next()
+	}
+}
+</file>
+
+<file path="internal/middleware/logger.go">
+package middleware
+
+import (
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+)
+
+// LoggerMiddleware 日志中间件
+func LoggerMiddleware(logger *zap.Logger) gin.HandlerFunc {
+	return gin.LoggerWithFormatter(func(param gin.LogFormatterParams) string {
+		logger.Info("HTTP Request",
+			zap.String("method", param.Method),
+			zap.String("path", param.Path),
+			zap.Int("status", param.StatusCode),
+			zap.Duration("latency", param.Latency),
+			zap.String("client_ip", param.ClientIP),
+			zap.String("user_agent", param.Request.UserAgent()),
+		)
+		return ""
+	})
+}
+
+// StructuredLoggerMiddleware 结构化日志中间件
+func StructuredLoggerMiddleware(logger *zap.Logger) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		start := time.Now()
+		path := c.Request.URL.Path
+		raw := c.Request.URL.RawQuery
+
+		// 处理请求
+		c.Next()
+
+		// 计算延迟
+		latency := time.Since(start)
+
+		// 构建完整路径
+		if raw != "" {
+			path = path + "?" + raw
+		}
+
+		// 记录日志
+		logger.Info("HTTP Request",
+			zap.String("method", c.Request.Method),
+			zap.String("path", path),
+			zap.Int("status", c.Writer.Status()),
+			zap.Duration("latency", latency),
+			zap.String("client_ip", c.ClientIP()),
+			zap.String("user_agent", c.Request.UserAgent()),
+			zap.Int("body_size", c.Writer.Size()),
+		)
+	}
+}
+</file>
+
+<file path="internal/middleware/recovery.go">
+package middleware
+
+import (
+	"net/http"
+
+	"vue2-blog-server/internal/pkg"
+
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+)
+
+// RecoveryMiddleware 恢复中间件
+func RecoveryMiddleware(logger *zap.Logger) gin.HandlerFunc {
+	return gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
+		if err, ok := recovered.(string); ok {
+			logger.Error("Panic recovered",
+				zap.String("error", err),
+				zap.String("path", c.Request.URL.Path),
+				zap.String("method", c.Request.Method),
+			)
+		} else {
+			logger.Error("Panic recovered",
+				zap.Any("error", recovered),
+				zap.String("path", c.Request.URL.Path),
+				zap.String("method", c.Request.Method),
+			)
+		}
+
+		pkg.ServerError(c, "服务器内部错误")
+		c.AbortWithStatus(http.StatusInternalServerError)
+	})
+}
+</file>
+
+<file path="internal/model/article.go">
+package model
+
+import (
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+// Article 文章模型
+type Article struct {
+	ID         primitive.ObjectID   `bson:"_id,omitempty" json:"id"`
+	Type       string               `bson:"type" json:"type" validate:"required,oneof=原创 转载"`
+	Title      string               `bson:"title" json:"title" validate:"required"`
+	Content    string               `bson:"content" json:"content" validate:"required"`
+	Tag        string               `bson:"tag" json:"tag" validate:"required"`
+	UpdateDate time.Time            `bson:"updateDate" json:"updateDate"`
+	Date       time.Time            `bson:"date" json:"date"`
+	Surface    string               `bson:"surface" json:"surface"`
+	PV         int64                `bson:"pv" json:"pv"`
+	CommentIDs []primitive.ObjectID `bson:"comment" json:"comment"`
+}
+
+// ArticleInfo 文章信息统计
+type ArticleInfo struct {
+	ID   primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	Tags []string           `bson:"tags" json:"tags"`
+	Num  int64              `bson:"num" json:"num"`
+}
+
+// ArticleListRequest 文章列表请求
+type ArticleListRequest struct {
+	Tag   string `form:"tag"`
+	Skip  int    `form:"skip" validate:"min=0"`
+	Limit int    `form:"limit" validate:"min=1,max=20"`
+}
+
+// ArticleSearchRequest 文章搜索请求
+type ArticleSearchRequest struct {
+	Content string `json:"content" validate:"required"`
+}
+
+// ArticleHotRequest 热门文章请求
+type ArticleHotRequest struct {
+	Limit int `form:"limit" validate:"min=1,max=20"`
+}
+
+// ArticleDTO 文章传输对象
+type ArticleDTO struct {
+	ID         primitive.ObjectID `json:"id"`
+	Type       string             `json:"type"`
+	Title      string             `json:"title"`
+	Content    string             `json:"content,omitempty"` // 列表时不返回内容
+	Tag        string             `json:"tag"`
+	UpdateDate time.Time          `json:"updateDate"`
+	Date       time.Time          `json:"date"`
+	Surface    string             `json:"surface"`
+	PV         int64              `json:"pv"`
+}
+
+// ToDTO 转换为DTO
+func (a *Article) ToDTO(includeContent bool) *ArticleDTO {
+	dto := &ArticleDTO{
+		ID:         a.ID,
+		Type:       a.Type,
+		Title:      a.Title,
+		Tag:        a.Tag,
+		UpdateDate: a.UpdateDate,
+		Date:       a.Date,
+		Surface:    a.Surface,
+		PV:         a.PV,
+	}
+	
+	if includeContent {
+		dto.Content = a.Content
+	}
+	
+	return dto
+}
+</file>
+
+<file path="internal/model/message.go">
+package model
+
+import (
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+// MessageChild 子留言
+type MessageChild struct {
+	User    primitive.ObjectID `bson:"user" json:"user"`
+	Content string             `bson:"content" json:"content"`
+	ReUser  string             `bson:"reUser" json:"reUser"`
+	Date    time.Time          `bson:"date" json:"date"`
+}
+
+// Message 留言模型
+type Message struct {
+	ID       primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	User     primitive.ObjectID `bson:"user" json:"user"`
+	Content  string             `bson:"content" json:"content" validate:"required"`
+	Date     time.Time          `bson:"date" json:"date"`
+	Children []MessageChild     `bson:"children" json:"children"`
+}
+
+// MessageCreateRequest 创建留言请求
+type MessageCreateRequest struct {
+	Content string `json:"content" validate:"required"`
+}
+
+// MessageReplyRequest 回复留言请求
+type MessageReplyRequest struct {
+	Content string `json:"content" validate:"required"`
+	ReUser  string `json:"reUser"`
+}
+
+// MessageListRequest 留言列表请求
+type MessageListRequest struct {
+	Skip  int `form:"skip" validate:"min=0"`
+	Limit int `form:"limit" validate:"min=1,max=20"`
+}
+
+// MessageChildDTO 子留言DTO
+type MessageChildDTO struct {
+	User    *UserDTO  `json:"user"`
+	Content string    `json:"content"`
+	ReUser  string    `json:"reUser"`
+	Date    time.Time `json:"date"`
+}
+
+// MessageDTO 留言DTO
+type MessageDTO struct {
+	ID       primitive.ObjectID `json:"id"`
+	User     *UserDTO           `json:"user"`
+	Content  string             `json:"content"`
+	Date     time.Time          `json:"date"`
+	Children []MessageChildDTO  `json:"children"`
+}
+</file>
+
+<file path="internal/model/upload.go">
+package model
+
+// UploadAvatarResponse 头像上传响应
+type UploadAvatarResponse struct {
+	URL string `json:"url"`
+}
+</file>
+
+<file path="internal/model/user.go">
+package model
+
+import (
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+// User 用户模型
+type User struct {
+	ID       primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	User     string             `bson:"user" json:"user" validate:"required,min=2,max=7"`
+	Pwd      string             `bson:"pwd" json:"pwd" validate:"required,min=6,max=18"`
+	RegDate  int64              `bson:"regDate" json:"regDate"`
+	Photo    string             `bson:"photo" json:"photo"`
+	Disabled bool               `bson:"disabled" json:"disabled"`
+	Admin    bool               `bson:"admin" json:"admin"`
+}
+
+// UserDTO 用户数据传输对象
+type UserDTO struct {
+	ID       primitive.ObjectID `json:"id"`
+	User     string             `json:"user"`
+	RegDate  int64              `json:"regDate"`
+	Photo    string             `json:"photo"`
+	Disabled bool               `json:"disabled"`
+	Admin    bool               `json:"admin"`
+}
+
+// UserLoginRequest 登录请求
+type UserLoginRequest struct {
+	User string `json:"user" validate:"required,min=2,max=7"`
+	Pwd  string `json:"pwd" validate:"required,min=6,max=18"`
+}
+
+// UserRegisterRequest 注册请求
+type UserRegisterRequest struct {
+	User  string `json:"user" validate:"required,min=2,max=7"`
+	Pwd   string `json:"pwd" validate:"required,min=6,max=18"`
+	Vcode string `json:"vcode" validate:"required"`
+}
+
+// ToDTO 转换为DTO
+func (u *User) ToDTO() *UserDTO {
+	return &UserDTO{
+		ID:       u.ID,
+		User:     u.User,
+		RegDate:  u.RegDate,
+		Photo:    u.Photo,
+		Disabled: u.Disabled,
+		Admin:    u.Admin,
+	}
+}
+</file>
+
+<file path="internal/model/visitor.go">
+package model
+
+import (
+	"time"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+// Visitor 访客模型
+type Visitor struct {
+	ID   primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	User primitive.ObjectID `bson:"user" json:"user"`
+	Date time.Time          `bson:"date" json:"date"`
+}
+
+// VisitorListRequest 访客列表请求
+type VisitorListRequest struct {
+	Limit int `form:"limit" validate:"min=1,max=50"`
+}
+
+// VisitorDTO 访客DTO
+type VisitorDTO struct {
+	ID   primitive.ObjectID `json:"id"`
+	User *UserDTO           `json:"user"`
+	Date time.Time          `json:"date"`
+}
+</file>
+
+<file path="internal/pkg/response.go">
+package pkg
+
+import (
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+)
+
+// Response 统一响应结构
+type Response struct {
+	Code int         `json:"code"`
+	Msg  string      `json:"msg"`
+	Data interface{} `json:"data,omitempty"`
+}
+
+// 响应码定义
+const (
+	SuccessCode = 0
+	ErrorCode   = 1
+	ValidateCode = 2
+	AuthCode    = 3
+	ServerCode  = 4
+)
+
+// Success 成功响应
+func Success(c *gin.Context, data interface{}) {
+	c.JSON(http.StatusOK, Response{
+		Code: SuccessCode,
+		Msg:  "操作成功",
+		Data: data,
+	})
+}
+
+// SuccessWithMsg 带消息的成功响应
+func SuccessWithMsg(c *gin.Context, msg string, data interface{}) {
+	c.JSON(http.StatusOK, Response{
+		Code: SuccessCode,
+		Msg:  msg,
+		Data: data,
+	})
+}
+
+// Error 错误响应
+func Error(c *gin.Context, msg string) {
+	c.JSON(http.StatusOK, Response{
+		Code: ErrorCode,
+		Msg:  msg,
+	})
+}
+
+// ValidateError 验证错误响应
+func ValidateError(c *gin.Context, msg string) {
+	c.JSON(http.StatusOK, Response{
+		Code: ValidateCode,
+		Msg:  msg,
+	})
+}
+
+// AuthError 认证错误响应
+func AuthError(c *gin.Context, msg string) {
+	c.JSON(http.StatusUnauthorized, Response{
+		Code: AuthCode,
+		Msg:  msg,
+	})
+}
+
+// ServerError 服务器错误响应
+func ServerError(c *gin.Context, msg string) {
+	c.JSON(http.StatusInternalServerError, Response{
+		Code: ServerCode,
+		Msg:  msg,
+	})
+}
+</file>
+
+<file path="internal/repository/article_repository.go">
+package repository
+
+import (
+	"context"
+	"time"
+
+	"vue2-blog-server/internal/model"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+type ArticleRepository struct {
+	collection     *mongo.Collection
+	infoCollection *mongo.Collection
+}
+
+func NewArticleRepository(db *Database) *ArticleRepository {
+	return &ArticleRepository{
+		collection:     db.GetCollection("article"),
+		infoCollection: db.GetCollection("articleInfo"),
+	}
+}
+
+// Create 创建文章
+func (r *ArticleRepository) Create(ctx context.Context, article *model.Article) error {
+	now := time.Now()
+	article.Date = now
+	article.UpdateDate = now
+	article.PV = 0
+	
+	if article.Surface == "" {
+		article.Surface = "http://47.96.127.142:80/img/defaultSurface.jpg"
+	}
+	
+	result, err := r.collection.InsertOne(ctx, article)
+	if err != nil {
+		return err
+	}
+	
+	article.ID = result.InsertedID.(primitive.ObjectID)
+	return nil
+}
+
+// FindByID 根据ID查找文章
+func (r *ArticleRepository) FindByID(ctx context.Context, id primitive.ObjectID) (*model.Article, error) {
+	var article model.Article
+	err := r.collection.FindOne(ctx, bson.M{"_id": id}).Decode(&article)
+	if err != nil {
+		return nil, err
+	}
+	return &article, nil
+}
+
+// FindList 分页查询文章列表
+func (r *ArticleRepository) FindList(ctx context.Context, tag string, skip, limit int) ([]*model.Article, error) {
+	filter := bson.M{}
+	if tag != "" {
+		filter["tag"] = tag
+	}
+	
+	opts := options.Find().
+		SetSort(bson.D{{Key: "date", Value: -1}}).
+		SetSkip(int64(skip)).
+		SetLimit(int64(limit))
+	
+	cursor, err := r.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	
+	var articles []*model.Article
+	if err = cursor.All(ctx, &articles); err != nil {
+		return nil, err
+	}
+	
+	return articles, nil
+}
+
+// FindHot 查找热门文章
+func (r *ArticleRepository) FindHot(ctx context.Context, limit int) ([]*model.Article, error) {
+	opts := options.Find().
+		SetSort(bson.D{{Key: "pv", Value: -1}}).
+		SetLimit(int64(limit))
+	
+	cursor, err := r.collection.Find(ctx, bson.M{}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	
+	var articles []*model.Article
+	if err = cursor.All(ctx, &articles); err != nil {
+		return nil, err
+	}
+	
+	return articles, nil
+}
+
+// Search 搜索文章
+func (r *ArticleRepository) Search(ctx context.Context, content string) ([]*model.Article, error) {
+	filter := bson.M{
+		"$or": []bson.M{
+			{"title": bson.M{"$regex": content, "$options": "i"}},
+			{"tag": bson.M{"$regex": content, "$options": "i"}},
+		},
+	}
+	
+	opts := options.Find().SetSort(bson.D{{Key: "date", Value: -1}})
+	
+	cursor, err := r.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	
+	var articles []*model.Article
+	if err = cursor.All(ctx, &articles); err != nil {
+		return nil, err
+	}
+	
+	return articles, nil
+}
+
+// IncrementPV 增加文章浏览量
+func (r *ArticleRepository) IncrementPV(ctx context.Context, id primitive.ObjectID) error {
+	_, err := r.collection.UpdateOne(
+		ctx,
+		bson.M{"_id": id},
+		bson.M{"$inc": bson.M{"pv": 1}},
+	)
+	return err
+}
+
+// GetInfo 获取文章信息统计
+func (r *ArticleRepository) GetInfo(ctx context.Context) (*model.ArticleInfo, error) {
+	var info model.ArticleInfo
+	err := r.infoCollection.FindOne(ctx, bson.M{}).Decode(&info)
+	if err != nil {
+		// 如果没有找到，返回默认值
+		if err == mongo.ErrNoDocuments {
+			count, err := r.collection.CountDocuments(ctx, bson.M{})
+			if err != nil {
+				return nil, err
+			}
+			
+			return &model.ArticleInfo{
+				Tags: []string{"HTML&Css", "JavaScript", "Node", "Vue&React", "Other"},
+				Num:  count,
+			}, nil
+		}
+		return nil, err
+	}
+	return &info, nil
+}
+
+// UpdateInfo 更新文章信息统计
+func (r *ArticleRepository) UpdateInfo(ctx context.Context, info *model.ArticleInfo) error {
+	opts := options.Replace().SetUpsert(true)
+	_, err := r.infoCollection.ReplaceOne(ctx, bson.M{}, info, opts)
+	return err
+}
+</file>
+
+<file path="internal/repository/database.go">
+package repository
+
+import (
+	"context"
+	"time"
+
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+// Database 数据库连接结构
+type Database struct {
+	client *mongo.Client
+	db     *mongo.Database
+}
+
+// NewDatabase 创建数据库连接
+func NewDatabase(uri, dbName string) (*Database, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(uri))
+	if err != nil {
+		return nil, err
+	}
+
+	// 测试连接
+	err = client.Ping(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Database{
+		client: client,
+		db:     client.Database(dbName),
+	}, nil
+}
+
+// Close 关闭数据库连接
+func (d *Database) Close() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return d.client.Disconnect(ctx)
+}
+
+// GetCollection 获取集合
+func (d *Database) GetCollection(name string) *mongo.Collection {
+	return d.db.Collection(name)
+}
+</file>
+
+<file path="internal/repository/message_repository.go">
+package repository
+
+import (
+	"context"
+	"time"
+
+	"vue2-blog-server/internal/model"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+type MessageRepository struct {
+	collection *mongo.Collection
+}
+
+func NewMessageRepository(db *Database) *MessageRepository {
+	return &MessageRepository{
+		collection: db.GetCollection("message"),
+	}
+}
+
+// Create 创建留言
+func (r *MessageRepository) Create(ctx context.Context, message *model.Message) error {
+	message.Date = time.Now()
+	message.Children = []model.MessageChild{}
+	
+	result, err := r.collection.InsertOne(ctx, message)
+	if err != nil {
+		return err
+	}
+	
+	message.ID = result.InsertedID.(primitive.ObjectID)
+	return nil
+}
+
+// FindList 分页查询留言列表
+func (r *MessageRepository) FindList(ctx context.Context, skip, limit int) ([]*model.Message, error) {
+	opts := options.Find().
+		SetSort(bson.D{{Key: "date", Value: -1}}).
+		SetSkip(int64(skip)).
+		SetLimit(int64(limit))
+	
+	cursor, err := r.collection.Find(ctx, bson.M{}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	
+	var messages []*model.Message
+	if err = cursor.All(ctx, &messages); err != nil {
+		return nil, err
+	}
+	
+	return messages, nil
+}
+
+// FindByID 根据ID查找留言
+func (r *MessageRepository) FindByID(ctx context.Context, id primitive.ObjectID) (*model.Message, error) {
+	var message model.Message
+	err := r.collection.FindOne(ctx, bson.M{"_id": id}).Decode(&message)
+	if err != nil {
+		return nil, err
+	}
+	return &message, nil
+}
+
+// AddChildMessage 添加子留言
+func (r *MessageRepository) AddChildMessage(ctx context.Context, messageID primitive.ObjectID, child model.MessageChild) error {
+	child.Date = time.Now()
+	
+	_, err := r.collection.UpdateOne(
+		ctx,
+		bson.M{"_id": messageID},
+		bson.M{"$push": bson.M{"children": child}},
+	)
+	return err
+}
+</file>
+
+<file path="internal/repository/user_repository.go">
+package repository
+
+import (
+	"context"
+	"time"
+
+	"vue2-blog-server/internal/model"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+)
+
+type UserRepository struct {
+	collection *mongo.Collection
+}
+
+func NewUserRepository(db *Database) *UserRepository {
+	return &UserRepository{
+		collection: db.GetCollection("user"),
+	}
+}
+
+// Create 创建用户
+func (r *UserRepository) Create(ctx context.Context, user *model.User) error {
+	user.RegDate = time.Now().UnixNano() / int64(time.Millisecond)
+	if user.Photo == "" {
+		user.Photo = "http://47.96.127.142:80/img/defaultPhoto.jpeg"
+	}
+	
+	result, err := r.collection.InsertOne(ctx, user)
+	if err != nil {
+		return err
+	}
+	
+	user.ID = result.InsertedID.(primitive.ObjectID)
+	return nil
+}
+
+// FindByUsername 根据用户名查找用户
+func (r *UserRepository) FindByUsername(ctx context.Context, username string) (*model.User, error) {
+	var user model.User
+	err := r.collection.FindOne(ctx, bson.M{"user": username}).Decode(&user)
+	if err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+// FindByID 根据ID查找用户
+func (r *UserRepository) FindByID(ctx context.Context, id primitive.ObjectID) (*model.User, error) {
+	var user model.User
+	err := r.collection.FindOne(ctx, bson.M{"_id": id}).Decode(&user)
+	if err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+// UpdatePhoto 更新用户头像
+func (r *UserRepository) UpdatePhoto(ctx context.Context, userID primitive.ObjectID, photo string) error {
+	_, err := r.collection.UpdateOne(
+		ctx,
+		bson.M{"_id": userID},
+		bson.M{"$set": bson.M{"photo": photo}},
+	)
+	return err
+}
+
+// ExistsByUsername 检查用户名是否存在
+func (r *UserRepository) ExistsByUsername(ctx context.Context, username string) (bool, error) {
+	count, err := r.collection.CountDocuments(ctx, bson.M{"user": username})
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+</file>
+
+<file path="internal/repository/visitor_repository.go">
+package repository
+
+import (
+	"context"
+	"time"
+
+	"vue2-blog-server/internal/model"
+
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
+)
+
+type VisitorRepository struct {
+	collection *mongo.Collection
+}
+
+func NewVisitorRepository(db *Database) *VisitorRepository {
+	return &VisitorRepository{
+		collection: db.GetCollection("visitor"),
+	}
+}
+
+// Create 创建访客记录
+func (r *VisitorRepository) Create(ctx context.Context, visitor *model.Visitor) error {
+	visitor.Date = time.Now()
+	
+	result, err := r.collection.InsertOne(ctx, visitor)
+	if err != nil {
+		return err
+	}
+	
+	visitor.ID = result.InsertedID.(primitive.ObjectID)
+	return nil
+}
+
+// DeleteByUserID 删除用户的访客记录
+func (r *VisitorRepository) DeleteByUserID(ctx context.Context, userID primitive.ObjectID) error {
+	_, err := r.collection.DeleteMany(ctx, bson.M{"user": userID})
+	return err
+}
+
+// FindList 查询访客列表
+func (r *VisitorRepository) FindList(ctx context.Context, limit int) ([]*model.Visitor, error) {
+	opts := options.Find().
+		SetSort(bson.D{{Key: "date", Value: -1}}).
+		SetLimit(int64(limit))
+	
+	cursor, err := r.collection.Find(ctx, bson.M{}, opts)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+	
+	var visitors []*model.Visitor
+	if err = cursor.All(ctx, &visitors); err != nil {
+		return nil, err
+	}
+	
+	return visitors, nil
+}
+</file>
+
+<file path="internal/server/server.go">
+package server
+
+import (
+	"context"
+	"net/http"
+	"time"
+
+	"vue2-blog-server/internal/auth"
+	"vue2-blog-server/internal/handler"
+	"vue2-blog-server/internal/middleware"
+	"vue2-blog-server/internal/pkg"
+
+	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
+)
+
+type Server struct {
+	router     *gin.Engine
+	logger     *zap.Logger
+	jwtManager *auth.JWTManager
+	handlers   *Handlers
+}
+
+type Handlers struct {
+	AuthHandler    *handler.AuthHandler
+	ArticleHandler *handler.ArticleHandler
+	MessageHandler *handler.MessageHandler
+	VisitorHandler *handler.VisitorHandler
+	UploadHandler  *handler.UploadHandler
+}
+
+func NewServer(logger *zap.Logger, jwtManager *auth.JWTManager, handlers *Handlers) *Server {
+	return &Server{
+		logger:     logger,
+		jwtManager: jwtManager,
+		handlers:   handlers,
+	}
+}
+
+func (s *Server) Initialize() {
+	// 设置生产模式
+	gin.SetMode(gin.ReleaseMode)
+	
+	s.router = gin.New()
+	
+	// 添加全局中间件
+	s.router.Use(middleware.CORSMiddleware())
+	s.router.Use(middleware.StructuredLoggerMiddleware(s.logger))
+	s.router.Use(middleware.RecoveryMiddleware(s.logger))
+
+	// 静态文件服务 - 添加头像目录映射
+	s.router.Static("/img", "./public/img")
+	s.router.Static("/public", "./public")
+	s.router.Static("/avatar", "./public/avatar")
+
+	// 健康检查
+	s.router.GET("/healthz", s.healthCheck)
+
+	// 注册路由
+	s.registerRoutes()
+}
+
+func (s *Server) registerRoutes() {
+	api := s.router.Group("/api/v1")
+	
+	// 认证相关路由
+	auth := api.Group("/auth")
+	{
+		auth.POST("/register", s.handlers.AuthHandler.Register)
+		auth.POST("/login", s.handlers.AuthHandler.Login)
+		auth.POST("/logout", s.handlers.AuthHandler.Logout)
+		auth.POST("/refresh", s.handlers.AuthHandler.RefreshToken)
+		
+		// 需要认证的路由
+		authRequired := auth.Group("")
+		authRequired.Use(middleware.AuthMiddleware(s.jwtManager))
+		{
+			authRequired.GET("/profile", s.handlers.AuthHandler.Profile)
+		}
+	}
+
+	// 文章相关路由
+	articles := api.Group("/articles")
+	{
+		articles.GET("", s.handlers.ArticleHandler.GetList)
+		articles.GET("/hot", s.handlers.ArticleHandler.GetHot)
+		articles.GET("/info", s.handlers.ArticleHandler.GetInfo)
+		articles.POST("/search", s.handlers.ArticleHandler.Search)
+		articles.GET("/:id", s.handlers.ArticleHandler.GetByID)
+	}
+
+	// 留言相关路由
+	messages := api.Group("/messages")
+	{
+		messages.GET("", s.handlers.MessageHandler.GetList)
+		
+		// 需要认证的路由
+		messageAuth := messages.Group("")
+		messageAuth.Use(middleware.AuthMiddleware(s.jwtManager))
+		{
+			messageAuth.POST("", s.handlers.MessageHandler.Create)
+			messageAuth.POST("/:id/replies", s.handlers.MessageHandler.Reply)
+		}
+	}
+
+	// 访客相关路由
+	visitors := api.Group("/visitors")
+	{
+		visitors.GET("", s.handlers.VisitorHandler.GetList)
+	}
+
+	// 上传相关路由
+	upload := api.Group("/upload")
+	upload.Use(middleware.AuthMiddleware(s.jwtManager))
+	{
+		upload.POST("/avatar", s.handlers.UploadHandler.UploadAvatar)
+	}
+
+	// 兼容旧版接口路由
+	s.registerLegacyRoutes()
+}
+
+func (s *Server) registerLegacyRoutes() {
+	// 兼容旧版接口
+	legacy := s.router.Group("")
+	
+	// 文章接口兼容 - 修复请求方式为POST并支持form数据
+	legacy.POST("/article/getInfo", s.wrapFormHandler(s.handlers.ArticleHandler.GetInfo))
+	legacy.POST("/article/getHot", s.wrapFormHandler(s.handlers.ArticleHandler.GetHot))
+	legacy.POST("/article/getShow", s.wrapFormHandler(s.handlers.ArticleHandler.GetList))
+	legacy.POST("/article", s.wrapFormHandler(func(c *gin.Context) {
+		// 处理单篇文章查询 - 通过_id参数
+		id := c.PostForm("_id")
+		if id != "" {
+			c.Param("id")
+			c.Set("id", id)
+			s.handlers.ArticleHandler.GetByID(c)
+		} else {
+			pkg.ValidateError(c, "缺少文章ID参数")
+		}
+	}))
+	legacy.POST("/article/search", s.wrapFormHandler(func(c *gin.Context) {
+		// 处理搜索请求 - keywords -> content
+		keywords := c.PostForm("keywords")
+		if keywords != "" {
+			c.Set("content", keywords)
+			s.handlers.ArticleHandler.Search(c)
+		} else {
+			pkg.ValidateError(c, "缺少搜索关键词")
+		}
+	}))
+	
+	// 添加延伸阅读接口
+	legacy.POST("/article/extend", s.wrapFormHandler(s.handlers.ArticleHandler.GetExtend))
+
+	// 登录接口兼容
+	login := legacy.Group("/login")
+	{
+		login.POST("", s.wrapFormHandler(s.handlers.AuthHandler.Login))
+		login.POST("/logout", s.wrapFormHandler(s.handlers.AuthHandler.Logout))
+		
+		// 可选认证中间件
+		login.Use(middleware.OptionalAuthMiddleware(s.jwtManager))
+		login.POST("/ifLogin", s.wrapFormHandler(s.handlers.AuthHandler.CheckLoginLegacy))
+	}
+
+	// 注册接口兼容 - 添加验证码接口
+	register := legacy.Group("/register")
+	{
+		register.POST("", s.wrapFormHandler(s.handlers.AuthHandler.Register))
+		register.POST("/vcode", s.wrapFormHandler(s.handlers.AuthHandler.GenerateVCode))
+		register.POST("/checkVcode", s.wrapFormHandler(s.handlers.AuthHandler.CheckVCode))
+	}
+
+	// 留言接口兼容 - 修复请求方式和参数映射
+	message := legacy.Group("/message")
+	{
+		message.POST("/getList", s.wrapFormHandler(s.handlers.MessageHandler.GetList))
+		
+		messageAuth := message.Group("")
+		messageAuth.Use(middleware.AuthMiddleware(s.jwtManager))
+		{
+			messageAuth.POST("/commit", s.wrapFormHandler(s.handlers.MessageHandler.Create))
+			messageAuth.POST("/childCommit", s.wrapFormHandler(func(c *gin.Context) {
+				// 修复参数映射 - parentId -> messageId
+				parentId := c.PostForm("parentId")
+				if parentId != "" {
+					c.Param("id")
+					c.Set("id", parentId)
+					s.handlers.MessageHandler.Reply(c)
+				} else {
+					pkg.ValidateError(c, "缺少父留言ID")
+				}
+			}))
+		}
+	}
+
+	// 访客接口兼容 - 修复请求方式
+	legacy.POST("/visitor", s.wrapFormHandler(s.handlers.VisitorHandler.GetList))
+
+	// 上传接口兼容
+	uploadLegacy := legacy.Group("/upload")
+	uploadLegacy.Use(middleware.AuthMiddleware(s.jwtManager))
+	{
+		uploadLegacy.POST("/avatar", s.handlers.UploadHandler.UploadAvatarLegacy)
+	}
+}
+
+// wrapFormHandler 包装处理器以支持表单数据解析
+func (s *Server) wrapFormHandler(handler gin.HandlerFunc) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		// 确保能够解析表单数据
+		c.Request.ParseForm()
+		handler(c)
+	}
+}
+
+func (s *Server) healthCheck(c *gin.Context) {
+	pkg.Success(c, gin.H{
+		"status":    "ok",
+		"timestamp": time.Now(),
+		"service":   "vue2-blog-server",
+	})
+}
+
+func (s *Server) Start(addr string) error {
+	s.logger.Info("Starting server", zap.String("address", addr))
+	
+	srv := &http.Server{
+		Addr:         addr,
+		Handler:      s.router,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 30 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	return srv.ListenAndServe()
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.logger.Info("Shutting down server...")
+	
+	srv := &http.Server{
+		Handler: s.router,
+	}
+	
+	return srv.Shutdown(ctx)
+}
+</file>
+
+<file path="internal/service/article_service.go">
+package service
+
+import (
+	"context"
+
+	"vue2-blog-server/internal/model"
+	"vue2-blog-server/internal/repository"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type ArticleService struct {
+	articleRepo *repository.ArticleRepository
+}
+
+func NewArticleService(articleRepo *repository.ArticleRepository) *ArticleService {
+	return &ArticleService{
+		articleRepo: articleRepo,
+	}
+}
+
+// GetList 获取文章列表
+func (s *ArticleService) GetList(ctx context.Context, req *model.ArticleListRequest) ([]*model.ArticleDTO, error) {
+	articles, err := s.articleRepo.FindList(ctx, req.Tag, req.Skip, req.Limit)
+	if err != nil {
+		return nil, err
+	}
+
+	var dtos []*model.ArticleDTO
+	for _, article := range articles {
+		dtos = append(dtos, article.ToDTO(false)) // 列表不包含内容
+	}
+
+	return dtos, nil
+}
+
+// GetByID 根据ID获取文章详情
+func (s *ArticleService) GetByID(ctx context.Context, id primitive.ObjectID) (*model.ArticleDTO, error) {
+	article, err := s.articleRepo.FindByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	// 增加浏览量
+	go s.articleRepo.IncrementPV(context.Background(), id)
+
+	return article.ToDTO(true), nil // 详情包含内容
+}
+
+// GetHot 获取热门文章
+func (s *ArticleService) GetHot(ctx context.Context, req *model.ArticleHotRequest) ([]*model.ArticleDTO, error) {
+	if req.Limit == 0 {
+		req.Limit = 8 // 默认8篇
+	}
+
+	articles, err := s.articleRepo.FindHot(ctx, req.Limit)
+	if err != nil {
+		return nil, err
+	}
+
+	var dtos []*model.ArticleDTO
+	for _, article := range articles {
+		dtos = append(dtos, article.ToDTO(false))
+	}
+
+	return dtos, nil
+}
+
+// Search 搜索文章
+func (s *ArticleService) Search(ctx context.Context, req *model.ArticleSearchRequest) ([]*model.ArticleDTO, error) {
+	articles, err := s.articleRepo.Search(ctx, req.Content)
+	if err != nil {
+		return nil, err
+	}
+
+	var dtos []*model.ArticleDTO
+	for _, article := range articles {
+		dtos = append(dtos, article.ToDTO(false))
+	}
+
+	return dtos, nil
+}
+
+// GetInfo 获取文章信息统计
+func (s *ArticleService) GetInfo(ctx context.Context) (*model.ArticleInfo, error) {
+	return s.articleRepo.GetInfo(ctx)
+}
+</file>
+
+<file path="internal/service/message_service.go">
+package service
+
+import (
+	"context"
+
+	"vue2-blog-server/internal/model"
+	"vue2-blog-server/internal/repository"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type MessageService struct {
+	messageRepo *repository.MessageRepository
+	userRepo    *repository.UserRepository
+}
+
+func NewMessageService(messageRepo *repository.MessageRepository, userRepo *repository.UserRepository) *MessageService {
+	return &MessageService{
+		messageRepo: messageRepo,
+		userRepo:    userRepo,
+	}
+}
+
+// Create 创建留言
+func (s *MessageService) Create(ctx context.Context, userID primitive.ObjectID, req *model.MessageCreateRequest) error {
+	message := &model.Message{
+		User:    userID,
+		Content: req.Content,
+	}
+
+	return s.messageRepo.Create(ctx, message)
+}
+
+// AddReply 添加回复
+func (s *MessageService) AddReply(ctx context.Context, messageID, userID primitive.ObjectID, req *model.MessageReplyRequest) error {
+	child := model.MessageChild{
+		User:    userID,
+		Content: req.Content,
+		ReUser:  req.ReUser,
+	}
+
+	return s.messageRepo.AddChildMessage(ctx, messageID, child)
+}
+
+// GetList 获取留言列表
+func (s *MessageService) GetList(ctx context.Context, req *model.MessageListRequest) ([]*model.MessageDTO, error) {
+	messages, err := s.messageRepo.FindList(ctx, req.Skip, req.Limit)
+	if err != nil {
+		return nil, err
+	}
+
+	var dtos []*model.MessageDTO
+	for _, message := range messages {
+		dto, err := s.toMessageDTO(ctx, message)
+		if err != nil {
+			continue // 跳过错误的数据
+		}
+		dtos = append(dtos, dto)
+	}
+
+	return dtos, nil
+}
+
+// toMessageDTO 转换为MessageDTO
+func (s *MessageService) toMessageDTO(ctx context.Context, message *model.Message) (*model.MessageDTO, error) {
+	// 获取主留言用户信息
+	user, err := s.userRepo.FindByID(ctx, message.User)
+	if err != nil {
+		return nil, err
+	}
+
+	dto := &model.MessageDTO{
+		ID:      message.ID,
+		User:    user.ToDTO(),
+		Content: message.Content,
+		Date:    message.Date,
+	}
+
+	// 处理子留言
+	for _, child := range message.Children {
+		childUser, err := s.userRepo.FindByID(ctx, child.User)
+		if err != nil {
+			continue // 跳过找不到用户的子留言
+		}
+
+		childDTO := model.MessageChildDTO{
+			User:    childUser.ToDTO(),
+			Content: child.Content,
+			ReUser:  child.ReUser,
+			Date:    child.Date,
+		}
+
+		dto.Children = append(dto.Children, childDTO)
+	}
+
+	return dto, nil
+}
+</file>
+
+<file path="internal/service/upload_service.go">
+package service
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"mime/multipart"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"vue2-blog-server/internal/model"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+)
+
+type UploadService struct {
+	userService *UserService
+	uploadPath  string
+	baseURL     string
+}
+
+func NewUploadService(userService *UserService, uploadPath, baseURL string) *UploadService {
+	return &UploadService{
+		userService: userService,
+		uploadPath:  uploadPath,
+		baseURL:     baseURL,
+	}
+}
+
+// UploadAvatar 上传头像
+func (s *UploadService) UploadAvatar(ctx context.Context, userID primitive.ObjectID, file *multipart.FileHeader) (*model.UploadAvatarResponse, error) {
+	// 检查文件类型
+	if !s.isValidImageType(file.Filename) {
+		return nil, fmt.Errorf("不支持的文件类型")
+	}
+
+	// 检查文件大小 (5MB)
+	if file.Size > 5*1024*1024 {
+		return nil, fmt.Errorf("文件大小不能超过5MB")
+	}
+
+	// 生成文件名
+	ext := filepath.Ext(file.Filename)
+	filename := fmt.Sprintf("%s_%d%s", userID.Hex(), time.Now().UnixNano(), ext)
+
+	// 确保上传目录存在
+	avatarDir := filepath.Join(s.uploadPath, "avatar")
+	if err := os.MkdirAll(avatarDir, 0755); err != nil {
+		return nil, fmt.Errorf("创建上传目录失败: %v", err)
+	}
+
+	// 保存文件
+	dst := filepath.Join(avatarDir, filename)
+	if err := s.saveFile(file, dst); err != nil {
+		return nil, fmt.Errorf("保存文件失败: %v", err)
+	}
+
+	// 生成访问URL - 使用/avatar路径，对应server.go中的静态路由映射
+	avatarURL := fmt.Sprintf("%s/avatar/%s", s.baseURL, filename)
+
+	// 更新用户头像
+	if err := s.userService.UpdateAvatar(ctx, userID, avatarURL); err != nil {
+		// 删除已上传的文件
+		os.Remove(dst)
+		return nil, fmt.Errorf("更新用户头像失败: %v", err)
+	}
+
+	return &model.UploadAvatarResponse{
+		URL: avatarURL,
+	}, nil
+}
+
+// isValidImageType 检查是否为有效的图片类型
+func (s *UploadService) isValidImageType(filename string) bool {
+	ext := strings.ToLower(filepath.Ext(filename))
+	validExts := []string{".jpg", ".jpeg", ".png", ".gif", ".webp"}
+	
+	for _, validExt := range validExts {
+		if ext == validExt {
+			return true
+		}
+	}
+	return false
+}
+
+// saveFile 保存文件
+func (s *UploadService) saveFile(fileHeader *multipart.FileHeader, dst string) error {
+	src, err := fileHeader.Open()
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, src)
+	return err
+}
+</file>
+
+<file path="internal/service/user_service.go">
+package service
+
+import (
+	"context"
+	"errors"
+
+	"vue2-blog-server/internal/model"
+	"vue2-blog-server/internal/repository"
+
+	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"golang.org/x/crypto/bcrypt"
+)
+
+type UserService struct {
+	userRepo    *repository.UserRepository
+	visitorRepo *repository.VisitorRepository
+}
+
+func NewUserService(userRepo *repository.UserRepository, visitorRepo *repository.VisitorRepository) *UserService {
+	return &UserService{
+		userRepo:    userRepo,
+		visitorRepo: visitorRepo,
+	}
+}
+
+// Register 用户注册
+func (s *UserService) Register(ctx context.Context, req *model.UserRegisterRequest) error {
+	// 检查用户名是否存在
+	exists, err := s.userRepo.ExistsByUsername(ctx, req.User)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return errors.New("用户名已存在")
+	}
+
+	// 密码加密
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Pwd), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+
+	user := &model.User{
+		User:     req.User,
+		Pwd:      string(hashedPassword),
+		Disabled: false,
+		Admin:    false,
+	}
+
+	return s.userRepo.Create(ctx, user)
+}
+
+// Login 用户登录
+func (s *UserService) Login(ctx context.Context, req *model.UserLoginRequest) (*model.UserDTO, error) {
+	user, err := s.userRepo.FindByUsername(ctx, req.User)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, errors.New("用户不存在")
+		}
+		return nil, err
+	}
+
+	// 检查密码（兼容明文密码）
+	err = s.checkPassword(req.Pwd, user.Pwd)
+	if err != nil {
+		return nil, errors.New("密码错误")
+	}
+
+	// 如果是明文密码，更新为加密密码
+	if s.isPlaintextPassword(user.Pwd) {
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Pwd), bcrypt.DefaultCost)
+		if err == nil {
+			user.Pwd = string(hashedPassword)
+			// 这里可以异步更新密码，避免影响登录响应时间
+		}
+	}
+
+	// 记录访客
+	go s.recordVisitor(context.Background(), user.ID)
+
+	return user.ToDTO(), nil
+}
+
+// GetProfile 获取用户资料
+func (s *UserService) GetProfile(ctx context.Context, userID primitive.ObjectID) (*model.UserDTO, error) {
+	user, err := s.userRepo.FindByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return user.ToDTO(), nil
+}
+
+// UpdateAvatar 更新用户头像
+func (s *UserService) UpdateAvatar(ctx context.Context, userID primitive.ObjectID, avatarURL string) error {
+	return s.userRepo.UpdatePhoto(ctx, userID, avatarURL)
+}
+
+// checkPassword 检查密码
+func (s *UserService) checkPassword(inputPassword, storedPassword string) error {
+	// 如果是明文密码（兼容旧数据）
+	if s.isPlaintextPassword(storedPassword) {
+		if inputPassword == storedPassword {
+			return nil
+		}
+		return errors.New("密码错误")
+	}
+
+	// bcrypt加密密码
+	return bcrypt.CompareHashAndPassword([]byte(storedPassword), []byte(inputPassword))
+}
+
+// isPlaintextPassword 判断是否为明文密码
+func (s *UserService) isPlaintextPassword(password string) bool {
+	// bcrypt hash通常以$2a$, $2b$, $2y$ 开头
+	return len(password) < 60 || password[:3] != "$2a" && password[:3] != "$2b" && password[:3] != "$2y"
+}
+
+// recordVisitor 记录访客
+func (s *UserService) recordVisitor(ctx context.Context, userID primitive.ObjectID) {
+	// 先删除该用户的旧访客记录
+	s.visitorRepo.DeleteByUserID(ctx, userID)
+
+	// 添加新的访客记录
+	visitor := &model.Visitor{
+		User: userID,
+	}
+	s.visitorRepo.Create(ctx, visitor)
+}
+</file>
+
+<file path="internal/service/visitor_service.go">
+package service
+
+import (
+	"context"
+
+	"vue2-blog-server/internal/model"
+	"vue2-blog-server/internal/repository"
+)
+
+type VisitorService struct {
+	visitorRepo *repository.VisitorRepository
+	userRepo    *repository.UserRepository
+}
+
+func NewVisitorService(visitorRepo *repository.VisitorRepository, userRepo *repository.UserRepository) *VisitorService {
+	return &VisitorService{
+		visitorRepo: visitorRepo,
+		userRepo:    userRepo,
+	}
+}
+
+// GetList 获取访客列表
+func (s *VisitorService) GetList(ctx context.Context, req *model.VisitorListRequest) ([]*model.VisitorDTO, error) {
+	if req.Limit == 0 {
+		req.Limit = 12 // 默认12个
+	}
+
+	visitors, err := s.visitorRepo.FindList(ctx, req.Limit)
+	if err != nil {
+		return nil, err
+	}
+
+	var dtos []*model.VisitorDTO
+	for _, visitor := range visitors {
+		dto, err := s.toVisitorDTO(ctx, visitor)
+		if err != nil {
+			continue // 跳过错误的数据
+		}
+		dtos = append(dtos, dto)
+	}
+
+	return dtos, nil
+}
+
+// toVisitorDTO 转换为VisitorDTO
+func (s *VisitorService) toVisitorDTO(ctx context.Context, visitor *model.Visitor) (*model.VisitorDTO, error) {
+	user, err := s.userRepo.FindByID(ctx, visitor.User)
+	if err != nil {
+		return nil, err
+	}
+
+	return &model.VisitorDTO{
+		ID:   visitor.ID,
+		User: user.ToDTO(),
+		Date: visitor.Date,
+	}, nil
+}
+</file>
+
+<file path="pkg/logger/logger.go">
+package logger
+
+import (
+	"vue2-blog-server/internal/config"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+)
+
+func New(cfg *config.LogConfig) (*zap.Logger, error) {
+	var zapConfig zap.Config
+
+	if cfg.Format == "json" {
+		zapConfig = zap.NewProductionConfig()
+	} else {
+		zapConfig = zap.NewDevelopmentConfig()
+	}
+
+	// 设置日志级别
+	level, err := zapcore.ParseLevel(cfg.Level)
+	if err != nil {
+		level = zapcore.InfoLevel
+	}
+	zapConfig.Level.SetLevel(level)
+
+	// 自定义时间格式
+	zapConfig.EncoderConfig.TimeKey = "timestamp"
+	zapConfig.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
+
+	return zapConfig.Build()
+}
+</file>
+
+<file path="Dockerfile">
+# 多阶段构建
+FROM golang:1.21-alpine AS builder
+
+# 设置工作目录
+WORKDIR /app
+
+# 复制go mod文件
+COPY go.mod go.sum ./
+
+# 下载依赖
+RUN go mod download
+
+# 复制源代码
+COPY . .
+
+# 构建应用
+RUN CGO_ENABLED=0 GOOS=linux go build -o main ./cmd/api
+
+# 最终镜像
+FROM alpine:latest
+
+# 安装ca-certificates for HTTPS
+RUN apk --no-cache add ca-certificates
+
+# 创建非root用户
+RUN addgroup -g 1001 appgroup && adduser -u 1001 -G appgroup -s /bin/sh -D appuser
+
+WORKDIR /root/
+
+# 从builder阶段复制二进制文件
+COPY --from=builder /app/main .
+COPY --from=builder /app/configs ./configs
+
+# 创建上传目录
+RUN mkdir -p ./public/img/upload/avatar
+
+# 更改文件所有者
+RUN chown -R appuser:appgroup /root
+
+# 切换到非root用户
+USER appuser
+
+# 暴露端口
+EXPOSE 8080
+
+# 运行应用
+CMD ["./main"]
+</file>
+
+<file path="go.mod">
+module vue2-blog-server
+
+go 1.21
+
+require (
+	github.com/gin-gonic/gin v1.9.1
+	github.com/go-playground/validator/v10 v10.16.0
+	github.com/golang-jwt/jwt/v5 v5.2.0
+	github.com/spf13/viper v1.18.2
+	go.mongodb.org/mongo-driver v1.13.1
+	go.uber.org/zap v1.26.0
+	golang.org/x/crypto v0.17.0
+)
+
+require (
+	github.com/bytedance/sonic v1.9.1 // indirect
+	github.com/chenzhuoyu/base64x v0.0.0-20221115062448-fe3a3abad311 // indirect
+	github.com/fsnotify/fsnotify v1.7.0 // indirect
+	github.com/gabriel-vasile/mimetype v1.4.2 // indirect
+	github.com/gin-contrib/sse v0.1.0 // indirect
+	github.com/go-playground/locales v0.14.1 // indirect
+	github.com/go-playground/universal-translator v0.18.1 // indirect
+	github.com/goccy/go-json v0.10.2 // indirect
+	github.com/golang/snappy v0.0.1 // indirect
+	github.com/hashicorp/hcl v1.0.0 // indirect
+	github.com/json-iterator/go v1.1.12 // indirect
+	github.com/klauspost/compress v1.17.0 // indirect
+	github.com/klauspost/cpuid/v2 v2.2.4 // indirect
+	github.com/leodido/go-urn v1.2.4 // indirect
+	github.com/magiconair/properties v1.8.7 // indirect
+	github.com/mattn/go-isatty v0.0.19 // indirect
+	github.com/mitchellh/mapstructure v1.5.0 // indirect
+	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
+	github.com/modern-go/reflect2 v1.0.2 // indirect
+	github.com/montanaflynn/stats v0.0.0-20171201202039-1bf9dbcd8cbe // indirect
+	github.com/pelletier/go-toml/v2 v2.1.0 // indirect
+	github.com/sagikazarmark/locafero v0.4.0 // indirect
+	github.com/sagikazarmark/slog-shim v0.1.0 // indirect
+	github.com/sourcegraph/conc v0.3.0 // indirect
+	github.com/spf13/afero v1.11.0 // indirect
+	github.com/spf13/cast v1.6.0 // indirect
+	github.com/spf13/pflag v1.0.5 // indirect
+	github.com/subosito/gotenv v1.6.0 // indirect
+	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
+	github.com/ugorji/go/codec v1.2.11 // indirect
+	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
+	github.com/xdg-go/scram v1.1.2 // indirect
+	github.com/xdg-go/stringprep v1.0.4 // indirect
+	github.com/youmark/pkcs8 v0.0.0-20181117223130-1be2e3e5546d // indirect
+	go.uber.org/multierr v1.10.0 // indirect
+	golang.org/x/arch v0.3.0 // indirect
+	golang.org/x/exp v0.0.0-20230905200255-921286631fa9 // indirect
+	golang.org/x/net v0.19.0 // indirect
+	golang.org/x/sync v0.5.0 // indirect
+	golang.org/x/sys v0.15.0 // indirect
+	golang.org/x/text v0.14.0 // indirect
+	google.golang.org/protobuf v1.31.0 // indirect
+	gopkg.in/ini.v1 v1.67.0 // indirect
+	gopkg.in/yaml.v3 v3.0.1 // indirect
+)
+</file>
+
+<file path="Makefile">
+.PHONY: build run clean test docker-build docker-run
+
+# 变量定义
+APP_NAME=vue2-blog-server
+DOCKER_IMAGE=$(APP_NAME):latest
+
+# 构建应用
+build:
+	go build -o bin/$(APP_NAME) ./cmd/api
+
+# 运行应用
+run:
+	go run ./cmd/api
+
+# 运行开发环境
+dev:
+	go run ./cmd/api --config=./configs/config.dev.yaml
+
+# 清理构建文件
+clean:
+	rm -rf bin/
+
+# 运行测试
+test:
+	go test -v ./...
+
+# 下载依赖
+deps:
+	go mod download
+	go mod tidy
+
+# 格式化代码
+fmt:
+	go fmt ./...
+
+# 静态检查
+lint:
+	golangci-lint run
+
+# 构建Docker镜像
+docker-build:
+	docker build -t $(DOCKER_IMAGE) .
+
+# 运行Docker容器
+docker-run:
+	docker run -p 8080:8080 $(DOCKER_IMAGE)
+
+# 生成API文档
+docs:
+	swag init -g ./cmd/api/main.go
+
+# 初始化项目
+init:
+	go mod init vue2-blog-server
+	go mod tidy
+
+# 安装工具
+install-tools:
+	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+	go install github.com/swaggo/swag/cmd/swag@latest
+</file>
+
+<file path="README.md">
+# Vue2 Blog Server (Go版本)
+
+这是原Vue2博客系统的Go语言重构版本，使用Gin框架和JWT认证替换原有的Express+Session架构。
+
+## 技术栈
+
+- **框架**: Gin (Go Web框架)
+- **数据库**: MongoDB
+- **认证**: JWT (替换Session)
+- **日志**: Zap (结构化日志)
+- **配置**: Viper (配置管理)
+- **密码加密**: bcrypt
+
+## 项目结构
+
+```
+server-go/
+├── cmd/api/              # 应用入口
+├── configs/              # 配置文件
+├── internal/
+│   ├── auth/            # JWT认证
+│   ├── config/          # 配置模块
+│   ├── handler/         # 控制器层
+│   ├── middleware/      # 中间件
+│   ├── model/           # 数据模型
+│   ├── pkg/             # 工具包
+│   ├── repository/      # 数据访问层
+│   ├── server/          # 服务器配置
+│   └── service/         # 业务逻辑层
+├── pkg/logger/          # 日志工具
+├── test/                # 测试文件
+├── Dockerfile           # Docker构建文件
+├── Makefile            # 构建脚本
+└── go.mod              # Go模块文件
+```
+
+## 功能特性
+
+### API接口
+- ✅ 用户注册/登录 (JWT认证)
+- ✅ 文章列表/详情/搜索/热门
+- ✅ 留言系统 (支持子留言)
+- ✅ 访客记录
+- ✅ 头像上传
+- ✅ 文章信息统计
+
+### 兼容性
+- 完全兼容现有MongoDB数据结构
+- 支持明文密码自动迁移到bcrypt加密
+- 提供新版API(/api/v1)和旧版兼容接口
+
+### 新特性
+- JWT无状态认证
+- 结构化日志
+- 优雅关闭
+- Docker支持
+- 健康检查接口
+
+## 快速开始
+
+### 环境要求
+- Go 1.21+
+- MongoDB
+- (可选) Docker
+
+### 本地开发
+
+1. 克隆项目并进入目录
+```bash
+cd server-go
+```
+
+2. 安装依赖
+```bash
+make deps
+```
+
+3. 配置数据库
+编辑 `configs/config.dev.yaml` 文件中的MongoDB连接信息
+
+4. 运行开发服务器
+```bash
+make dev
+```
+
+服务器将在 http://localhost:8080 启动
+
+### 生产部署
+
+1. 构建应用
+```bash
+make build
+```
+
+2. 配置生产环境
+编辑 `configs/config.yaml` 文件
+
+3. 运行应用
+```bash
+./bin/vue2-blog-server
+```
+
+### Docker部署
+
+1. 构建镜像
+```bash
+make docker-build
+```
+
+2. 运行容器
+```bash
+make docker-run
+```
+
+## API文档
+
+### 新版API (推荐)
+
+#### 认证
+- `POST /api/v1/auth/register` - 用户注册
+- `POST /api/v1/auth/login` - 用户登录
+- `POST /api/v1/auth/logout` - 用户登出
+- `GET /api/v1/auth/profile` - 获取用户信息
+- `POST /api/v1/auth/refresh` - 刷新Token
+
+#### 文章
+- `GET /api/v1/articles` - 文章列表
+- `GET /api/v1/articles/{id}` - 文章详情
+- `GET /api/v1/articles/hot` - 热门文章
+- `GET /api/v1/articles/info` - 文章统计
+- `POST /api/v1/articles/search` - 搜索文章
+
+#### 留言
+- `GET /api/v1/messages` - 留言列表
+- `POST /api/v1/messages` - 创建留言 (需认证)
+- `POST /api/v1/messages/{id}/replies` - 回复留言 (需认证)
+
+#### 访客
+- `GET /api/v1/visitors` - 访客列表
+
+#### 上传
+- `POST /api/v1/upload/avatar` - 头像上传 (需认证)
+
+### 兼容接口
+所有原有的Node.js版本接口路径仍然支持，无需修改前端代码。
+
+## 配置说明
+
+### 配置文件
+主配置文件为 `configs/config.yaml`，开发环境可使用 `configs/config.dev.yaml`
+
+### 环境变量
+可通过环境变量覆盖配置：
+- `SERVER_HOST` - 服务器地址
+- `SERVER_PORT` - 服务器端口
+- `DATABASE_URI` - MongoDB连接串
+- `JWT_SECRET` - JWT密钥
+
+## 开发工具
+
+```bash
+# 代码格式化
+make fmt
+
+# 静态检查
+make lint
+
+# 运行测试
+make test
+
+# 清理构建文件
+make clean
+```
+
+## 数据迁移
+
+### 密码迁移
+系统会自动检测明文密码并在用户登录时转换为bcrypt加密，无需手动迁移。
+
+### 数据结构
+完全兼容现有MongoDB数据结构，无需修改现有数据。
+
+## 监控和日志
+
+### 健康检查
+```bash
+curl http://localhost:8080/healthz
+```
+
+### 日志配置
+支持JSON和Console两种日志格式，可在配置文件中调整日志级别。
+
+## 性能优化
+
+- 使用连接池管理MongoDB连接
+- JWT无状态认证减少数据库查询
+- 静态文件服务优化
+- 优雅关闭确保请求完整处理
+
+## 安全特性
+
+- JWT Token认证
+- bcrypt密码加密
+- CORS跨域保护
+- 文件上传类型和大小限制
+- SQL注入防护
+
+## 故障排除
+
+### 常见问题
+
+1. **数据库连接失败**
+   - 检查MongoDB是否运行
+   - 验证连接字符串配置
+
+2. **JWT认证失败**
+   - 确认JWT密钥配置
+   - 检查Token是否过期
+
+3. **文件上传失败**
+   - 确认上传目录权限
+   - 检查文件大小限制
+
+## 贡献指南
+
+1. Fork项目
+2. 创建功能分支
+3. 提交代码
+4. 创建Pull Request
+
+## 许可证
+
+MIT License
+</file>
+
+</files>
