@@ -9,6 +9,9 @@ export default {
           DEFAULT: "#1677ff",
           dark: "#0958d9"
         }
+      },
+      fontFamily: {
+        handwriting: ["'Long Cang'", "cursive"]
       }
     }
   },
