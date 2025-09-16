@@ -9,6 +9,7 @@ import (
 	"image/draw"
 	"image/png"
 	"net/http"
+	"sync"
 
 	"vue2-blog-server/internal/auth"
 	"vue2-blog-server/internal/model"
@@ -25,6 +26,7 @@ type AuthHandler struct {
 	jwtManager   *auth.JWTManager
 	validator    *validator.Validate
 	vcodeStorage map[string]string // 临时存储验证码，生产环境应使用Redis
+	vcodeMu      sync.RWMutex
 }
 
 func NewAuthHandler(userService *service.UserService, jwtManager *auth.JWTManager) *AuthHandler {
@@ -39,7 +41,7 @@ func NewAuthHandler(userService *service.UserService, jwtManager *auth.JWTManage
 // Register 用户注册
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req model.UserRegisterRequest
-	
+
 	// 支持form数据和JSON数据
 	if user := c.PostForm("user"); user != "" {
 		req.User = user
@@ -62,16 +64,18 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	if sessionKey == "" {
 		sessionKey = c.PostForm("sessionKey")
 	}
-	
-	if sessionKey != "" && h.vcodeStorage[sessionKey] != "" {
-		if h.vcodeStorage[sessionKey] != req.Vcode {
-			pkg.ValidateError(c, "验证码错误")
-			return
+
+	if sessionKey != "" {
+		if storedCode, exists := h.getVCode(sessionKey); exists && storedCode != "" {
+			if storedCode != req.Vcode {
+				pkg.ValidateError(c, "验证码错误")
+				return
+			}
+			// 验证成功后删除验证码
+			h.deleteVCode(sessionKey)
 		}
-		// 验证成功后删除验证码
-		delete(h.vcodeStorage, sessionKey)
 	}
-	
+
 	err := h.userService.Register(c.Request.Context(), &req)
 	if err != nil {
 		pkg.Error(c, err.Error())
@@ -84,7 +88,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 // Login 用户登录
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req model.UserLoginRequest
-	
+
 	// 支持form数据和JSON数据
 	if user := c.PostForm("user"); user != "" {
 		req.User = user
@@ -127,7 +131,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 func (h *AuthHandler) Logout(c *gin.Context) {
 	// 清除Cookie
 	c.SetCookie("token", "", -1, "/", "", false, true)
-	
+
 	pkg.SuccessWithMsg(c, "退出登录成功", nil)
 }
 
@@ -203,17 +207,29 @@ func (h *AuthHandler) CheckLoginLegacy(c *gin.Context) {
 // GenerateVCode 生成验证码
 func (h *AuthHandler) GenerateVCode(c *gin.Context) {
 	// 生成随机字符串作为验证码
-	code := h.generateRandomCode(4)
-	
+	code, err := h.generateRandomCode(4)
+	if err != nil {
+		pkg.ServerError(c, "生成验证码失败")
+		return
+	}
+
 	// 生成会话key
-	sessionKey := h.generateSessionKey()
-	
+	sessionKey, err := h.generateSessionKey()
+	if err != nil {
+		pkg.ServerError(c, "生成会话标识失败")
+		return
+	}
+
 	// 存储验证码
-	h.vcodeStorage[sessionKey] = code
-	
+	h.setVCode(sessionKey, code)
+
 	// 生成SVG图片
-	svgImg := h.generateCodeImage(code)
-	
+	svgImg, err := h.generateCodeImage(code)
+	if err != nil {
+		pkg.ServerError(c, "生成验证码图片失败")
+		return
+	}
+
 	c.Header("X-Session-Key", sessionKey)
 	pkg.Success(c, gin.H{
 		"svgCode":    svgImg,
@@ -228,57 +244,88 @@ func (h *AuthHandler) CheckVCode(c *gin.Context) {
 	if sessionKey == "" {
 		sessionKey = c.PostForm("sessionKey")
 	}
-	
+
 	if sessionKey == "" {
 		pkg.ValidateError(c, "缺少会话标识")
 		return
 	}
-	
-	storedCode, exists := h.vcodeStorage[sessionKey]
+
+	storedCode, exists := h.getVCode(sessionKey)
 	if !exists {
 		pkg.ValidateError(c, "验证码已过期")
 		return
 	}
-	
+
 	if storedCode != svgCode {
 		pkg.ValidateError(c, "验证码错误")
 		return
 	}
-	
+
 	pkg.Success(c, gin.H{"valid": true})
 }
 
 // generateRandomCode 生成随机验证码
-func (h *AuthHandler) generateRandomCode(length int) string {
-	chars := "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+func (h *AuthHandler) generateRandomCode(length int) (string, error) {
+	const chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
 	code := make([]byte, length)
-	for i := 0; i < length; i++ {
-		b := make([]byte, 1)
-		rand.Read(b)
-		code[i] = chars[int(b[0])%len(chars)]
+	if _, err := rand.Read(code); err != nil {
+		return "", err
 	}
-	return string(code)
+
+	for i := range code {
+		code[i] = chars[int(code[i])%len(chars)]
+	}
+
+	return string(code), nil
 }
 
 // generateSessionKey 生成会话key
-func (h *AuthHandler) generateSessionKey() string {
+func (h *AuthHandler) generateSessionKey() (string, error) {
 	b := make([]byte, 16)
-	rand.Read(b)
-	return base64.URLEncoding.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+
+	return base64.URLEncoding.EncodeToString(b), nil
 }
 
 // generateCodeImage 生成验证码图片
-func (h *AuthHandler) generateCodeImage(code string) string {
+func (h *AuthHandler) generateCodeImage(code string) (string, error) {
 	// 创建简单的验证码图片
 	width, height := 120, 40
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
-	
+
 	// 填充白色背景
 	draw.Draw(img, img.Bounds(), &image.Uniform{color.RGBA{255, 255, 255, 255}}, image.Point{}, draw.Src)
-	
+
 	// 这里应该绘制验证码文字，为了简化，我们返回base64编码的PNG
 	var buf bytes.Buffer
-	png.Encode(&buf, img)
-	
-	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
+	if err := png.Encode(&buf, img); err != nil {
+		return "", err
+	}
+
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes()), nil
+}
+
+func (h *AuthHandler) getVCode(sessionKey string) (string, bool) {
+	h.vcodeMu.RLock()
+	defer h.vcodeMu.RUnlock()
+
+	code, exists := h.vcodeStorage[sessionKey]
+	return code, exists
+}
+
+func (h *AuthHandler) setVCode(sessionKey, code string) {
+	h.vcodeMu.Lock()
+	defer h.vcodeMu.Unlock()
+
+	h.vcodeStorage[sessionKey] = code
+}
+
+func (h *AuthHandler) deleteVCode(sessionKey string) {
+	h.vcodeMu.Lock()
+	defer h.vcodeMu.Unlock()
+
+	delete(h.vcodeStorage, sessionKey)
 }

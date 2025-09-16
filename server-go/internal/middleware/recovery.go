@@ -27,6 +27,6 @@ func RecoveryMiddleware(logger *zap.Logger) gin.HandlerFunc {
 		}
 
 		pkg.ServerError(c, "服务器内部错误")
-		c.AbortWithStatus(http.StatusInternalServerError)
+		c.Abort()
 	})
 }
