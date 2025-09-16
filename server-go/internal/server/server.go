@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -19,6 +20,7 @@ type Server struct {
 	logger     *zap.Logger
 	jwtManager *auth.JWTManager
 	handlers   *Handlers
+	httpServer *http.Server
 }
 
 type Handlers struct {
@@ -40,9 +42,9 @@ func NewServer(logger *zap.Logger, jwtManager *auth.JWTManager, handlers *Handle
 func (s *Server) Initialize() {
 	// 设置生产模式
 	gin.SetMode(gin.ReleaseMode)
-	
+
 	s.router = gin.New()
-	
+
 	// 添加全局中间件
 	s.router.Use(middleware.CORSMiddleware())
 	s.router.Use(middleware.StructuredLoggerMiddleware(s.logger))
@@ -62,7 +64,7 @@ func (s *Server) Initialize() {
 
 func (s *Server) registerRoutes() {
 	api := s.router.Group("/api/v1")
-	
+
 	// 认证相关路由
 	auth := api.Group("/auth")
 	{
@@ -70,7 +72,7 @@ func (s *Server) registerRoutes() {
 		auth.POST("/login", s.handlers.AuthHandler.Login)
 		auth.POST("/logout", s.handlers.AuthHandler.Logout)
 		auth.POST("/refresh", s.handlers.AuthHandler.RefreshToken)
-		
+
 		// 需要认证的路由
 		authRequired := auth.Group("")
 		authRequired.Use(middleware.AuthMiddleware(s.jwtManager))
@@ -93,7 +95,7 @@ func (s *Server) registerRoutes() {
 	messages := api.Group("/messages")
 	{
 		messages.GET("", s.handlers.MessageHandler.GetList)
-		
+
 		// 需要认证的路由
 		messageAuth := messages.Group("")
 		messageAuth.Use(middleware.AuthMiddleware(s.jwtManager))
@@ -123,7 +125,7 @@ func (s *Server) registerRoutes() {
 func (s *Server) registerLegacyRoutes() {
 	// 兼容旧版接口
 	legacy := s.router.Group("")
-	
+
 	// 文章接口兼容 - 修复请求方式为POST并支持form数据
 	legacy.POST("/article/getInfo", s.wrapFormHandler(s.handlers.ArticleHandler.GetInfo))
 	legacy.POST("/article/getHot", s.wrapFormHandler(s.handlers.ArticleHandler.GetHot))
@@ -149,7 +151,7 @@ func (s *Server) registerLegacyRoutes() {
 			pkg.ValidateError(c, "缺少搜索关键词")
 		}
 	}))
-	
+
 	// 添加延伸阅读接口
 	legacy.POST("/article/extend", s.wrapFormHandler(s.handlers.ArticleHandler.GetExtend))
 
@@ -158,7 +160,7 @@ func (s *Server) registerLegacyRoutes() {
 	{
 		login.POST("", s.wrapFormHandler(s.handlers.AuthHandler.Login))
 		login.POST("/logout", s.wrapFormHandler(s.handlers.AuthHandler.Logout))
-		
+
 		// 可选认证中间件
 		login.Use(middleware.OptionalAuthMiddleware(s.jwtManager))
 		login.POST("/ifLogin", s.wrapFormHandler(s.handlers.AuthHandler.CheckLoginLegacy))
@@ -176,7 +178,7 @@ func (s *Server) registerLegacyRoutes() {
 	message := legacy.Group("/message")
 	{
 		message.POST("/getList", s.wrapFormHandler(s.handlers.MessageHandler.GetList))
-		
+
 		messageAuth := message.Group("")
 		messageAuth.Use(middleware.AuthMiddleware(s.jwtManager))
 		{
@@ -224,9 +226,13 @@ func (s *Server) healthCheck(c *gin.Context) {
 }
 
 func (s *Server) Start(addr string) error {
+	if s.router == nil {
+		return errors.New("router has not been initialized")
+	}
+
 	s.logger.Info("Starting server", zap.String("address", addr))
-	
-	srv := &http.Server{
+
+	s.httpServer = &http.Server{
 		Addr:         addr,
 		Handler:      s.router,
 		ReadTimeout:  30 * time.Second,
@@ -234,15 +240,22 @@ func (s *Server) Start(addr string) error {
 		IdleTimeout:  120 * time.Second,
 	}
 
-	return srv.ListenAndServe()
+	if err := s.httpServer.ListenAndServe(); err != nil {
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	}
+
+	return nil
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
 	s.logger.Info("Shutting down server...")
-	
-	srv := &http.Server{
-		Handler: s.router,
+
+	if s.httpServer == nil {
+		return nil
 	}
-	
-	return srv.Shutdown(ctx)
+
+	return s.httpServer.Shutdown(ctx)
 }
